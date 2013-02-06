@@ -3,8 +3,9 @@ from __future__ import absolute_import
 from copy import deepcopy
 from datetime import datetime
 
-from django.core.exceptions import MultipleObjectsReturned
+from django.core.exceptions import MultipleObjectsReturned, FieldError
 from django.test import TestCase
+from django.utils import six
 from django.utils.translation import ugettext_lazy
 
 from .models import Article, Reporter
@@ -69,7 +70,7 @@ class ManyToOneTests(TestCase):
         self.assertQuerysetEqual(self.r2.article_set.all(), ["<Article: Paul's story>"])
 
         # Adding an object of the wrong type raises TypeError.
-        with self.assertRaisesRegexp(TypeError, "'Article' instance expected, got <Reporter.*"):
+        with six.assertRaisesRegex(self, TypeError, "'Article' instance expected, got <Reporter.*"):
             self.r.article_set.add(self.r2)
         self.assertQuerysetEqual(self.r.article_set.all(),
             [
@@ -266,7 +267,9 @@ class ManyToOneTests(TestCase):
             ["<Reporter: John Smith>"])
         self.assertQuerysetEqual(
             Reporter.objects.filter(article__headline__startswith='T'),
-            ["<Reporter: John Smith>", "<Reporter: John Smith>"])
+            ["<Reporter: John Smith>", "<Reporter: John Smith>"],
+            ordered=False
+        )
         self.assertQuerysetEqual(
             Reporter.objects.filter(article__headline__startswith='T').distinct(),
             ["<Reporter: John Smith>"])
@@ -284,7 +287,9 @@ class ManyToOneTests(TestCase):
                 "<Reporter: John Smith>",
                 "<Reporter: John Smith>",
                 "<Reporter: John Smith>",
-            ])
+            ],
+            ordered=False
+        )
         self.assertQuerysetEqual(
             Reporter.objects.filter(article__reporter__first_name__startswith='John').distinct(),
             ["<Reporter: John Smith>"])
@@ -421,6 +426,18 @@ class ManyToOneTests(TestCase):
         lazy = ugettext_lazy('test')
         reporter.article_set.create(headline=lazy,
                                     pub_date=datetime(2011, 6, 10))
-        notlazy = unicode(lazy)
+        notlazy = six.text_type(lazy)
         article = reporter.article_set.get()
         self.assertEqual(article.headline, notlazy)
+
+    def test_values_list_exception(self):
+        expected_message = "Cannot resolve keyword 'notafield' into field. Choices are: %s"
+
+        self.assertRaisesMessage(FieldError,
+                                 expected_message % ', '.join(Reporter._meta.get_all_field_names()),
+                                 Article.objects.values_list,
+                                 'reporter__notafield')
+        self.assertRaisesMessage(FieldError,
+                                 expected_message % ', '.join(['EXTRA',] + Article._meta.get_all_field_names()),
+                                 Article.objects.extra(select={'EXTRA': 'EXTRA_SELECT'}).values_list,
+                                 'notafield')

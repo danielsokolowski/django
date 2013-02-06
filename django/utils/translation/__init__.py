@@ -3,8 +3,9 @@ Internationalization support.
 """
 from __future__ import unicode_literals
 
-from django.utils.encoding import force_unicode
+from django.utils.encoding import force_text
 from django.utils.functional import lazy
+from django.utils import six
 
 
 __all__ = [
@@ -19,6 +20,11 @@ __all__ = [
     'pgettext', 'pgettext_lazy',
     'npgettext', 'npgettext_lazy',
 ]
+
+
+class TranslatorCommentWarning(SyntaxWarning):
+    pass
+
 
 # Here be dragons, so a short explanation of the logic won't hurt:
 # We are trying to solve two problems: (1) access settings, in particular
@@ -78,12 +84,47 @@ def pgettext(context, message):
 def npgettext(context, singular, plural, number):
     return _trans.npgettext(context, singular, plural, number)
 
-ngettext_lazy = lazy(ngettext, str)
 gettext_lazy = lazy(gettext, str)
-ungettext_lazy = lazy(ungettext, unicode)
-ugettext_lazy = lazy(ugettext, unicode)
-pgettext_lazy = lazy(pgettext, unicode)
-npgettext_lazy = lazy(npgettext, unicode)
+ugettext_lazy = lazy(ugettext, six.text_type)
+pgettext_lazy = lazy(pgettext, six.text_type)
+
+def lazy_number(func, resultclass, number=None, **kwargs):
+    if isinstance(number, int):
+        kwargs['number'] = number
+        proxy = lazy(func, resultclass)(**kwargs)
+    else:
+        class NumberAwareString(resultclass):
+            def __mod__(self, rhs):
+                if isinstance(rhs, dict) and number:
+                    try:
+                        number_value = rhs[number]
+                    except KeyError:
+                        raise KeyError('Your dictionary lacks key \'%s\'. '
+                            'Please provide it, because it is required to '
+                            'determine whether string is singular or plural.'
+                            % number)
+                else:
+                    number_value = rhs
+                kwargs['number'] = number_value
+                translated = func(**kwargs)
+                try:
+                    translated = translated % rhs
+                except TypeError:
+                    # String doesn't contain a placeholder for the number
+                    pass
+                return translated
+
+        proxy = lazy(lambda **kwargs: NumberAwareString(), NumberAwareString)(**kwargs)
+    return proxy
+
+def ngettext_lazy(singular, plural, number=None):
+    return lazy_number(ngettext, str, singular=singular, plural=plural, number=number)
+
+def ungettext_lazy(singular, plural, number=None):
+    return lazy_number(ungettext, six.text_type, singular=singular, plural=plural, number=number)
+
+def npgettext_lazy(context, singular, plural, number=None):
+    return lazy_number(npgettext, six.text_type, context=context, singular=singular, plural=plural, number=number)
 
 def activate(language):
     return _trans.activate(language)
@@ -138,8 +179,8 @@ def _string_concat(*strings):
     Lazy variant of string concatenation, needed for translations that are
     constructed from multiple parts.
     """
-    return ''.join([force_unicode(s) for s in strings])
-string_concat = lazy(_string_concat, unicode)
+    return ''.join([force_text(s) for s in strings])
+string_concat = lazy(_string_concat, six.text_type)
 
 def get_language_info(lang_code):
     from django.conf.locale import LANG_INFO

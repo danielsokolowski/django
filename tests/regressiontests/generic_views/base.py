@@ -69,7 +69,7 @@ class ViewTest(unittest.TestCase):
 
     def _assert_simple(self, response):
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, 'This is a simple view')
+        self.assertEqual(response.content, b'This is a simple view')
 
     def test_no_init_kwargs(self):
         """
@@ -173,15 +173,6 @@ class ViewTest(unittest.TestCase):
         """
         self.assertTrue(DecoratedDispatchView.as_view().is_decorated)
 
-    def test_head_no_get(self):
-        """
-        Test that a view class with no get responds to a HEAD request with HTTP
-        405.
-        """
-        request = self.rf.head('/')
-        view = PostOnlyView.as_view()
-        self.assertEqual(405, view(request).status_code)
-
     def test_options(self):
         """
         Test that views respond to HTTP OPTIONS requests with an Allow header
@@ -224,6 +215,17 @@ class ViewTest(unittest.TestCase):
         "Assert allowed HTTP methods reported in the Allow response header"
         response_allows = set(response['Allow'].split(', '))
         self.assertEqual(set(expected_methods + ('OPTIONS',)), response_allows)
+
+    def test_args_kwargs_request_on_self(self):
+        """
+        Test a view only has args, kwargs & request once `as_view`
+        has been called.
+        """
+        bare_view = InstanceView()
+        view = InstanceView.as_view()(self.rf.get('/'))
+        for attribute in ('args', 'kwargs', 'request'):
+            self.assertNotIn(attribute, dir(bare_view))
+            self.assertIn(attribute, dir(view))
 
 
 class TemplateViewTest(TestCase):
@@ -275,7 +277,8 @@ class TemplateViewTest(TestCase):
         """
         response = self.client.get('/template/simple/bar/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context['params'], {'foo': 'bar'})
+        self.assertEqual(response.context['foo'], 'bar')
+        self.assertTrue(isinstance(response.context['view'], View))
 
     def test_extra_template_params(self):
         """
@@ -283,8 +286,9 @@ class TemplateViewTest(TestCase):
         """
         response = self.client.get('/template/custom/bar/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context['params'], {'foo': 'bar'})
+        self.assertEqual(response.context['foo'], 'bar')
         self.assertEqual(response.context['key'], 'value')
+        self.assertTrue(isinstance(response.context['view'], View))
 
     def test_cached_views(self):
         """
@@ -307,6 +311,11 @@ class TemplateViewTest(TestCase):
         self.assertEqual(response2.status_code, 200)
 
         self.assertNotEqual(response.content, response2.content)
+
+    def test_content_type(self):
+        response = self.client.get('/template/content_type/')
+        self.assertEqual(response['Content-Type'], 'text/plain')
+
 
 class RedirectViewTest(unittest.TestCase):
     rf = RequestFactory()

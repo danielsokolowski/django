@@ -7,22 +7,26 @@ from __future__ import unicode_literals
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes import generic
+from django.utils.encoding import python_2_unicode_compatible
 
 
+@python_2_unicode_compatible
 class Parent(models.Model):
     name = models.CharField(max_length=50)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.name
 
 
+@python_2_unicode_compatible
 class Teacher(models.Model):
     name = models.CharField(max_length=50)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.name
 
 
+@python_2_unicode_compatible
 class Child(models.Model):
     name = models.CharField(max_length=50)
     teacher = models.ForeignKey(Teacher)
@@ -31,7 +35,7 @@ class Child(models.Model):
     object_id = models.PositiveIntegerField()
     parent = generic.GenericForeignKey()
 
-    def __unicode__(self):
+    def __str__(self):
         return 'I am %s, a child of %s' % (self.name, self.parent)
 
 
@@ -52,6 +56,9 @@ class Inner(models.Model):
     dummy = models.IntegerField()
     holder = models.ForeignKey(Holder)
     readonly = models.CharField("Inner readonly label", max_length=1)
+
+    def get_absolute_url(self):
+        return '/inner/'
 
 
 class Holder2(models.Model):
@@ -82,7 +89,6 @@ class Inner4Stacked(models.Model):
 class Inner4Tabular(models.Model):
     dummy = models.IntegerField(help_text="Awesome tabular help text is awesome.")
     holder = models.ForeignKey(Holder4)
-
 
 # Models for #12749
 
@@ -126,6 +132,7 @@ class Chapter(models.Model):
 
 
 # Models for #16838
+
 class CapoFamiglia(models.Model):
     name = models.CharField(max_length=100)
 
@@ -163,6 +170,17 @@ class ChildModel2(models.Model):
     def get_absolute_url(self):
         return '/child_model2/'
 
+# Models for #19524
+
+class LifeForm(models.Model):
+    pass
+
+class ExtraTerrestrial(LifeForm):
+    name = models.CharField(max_length=100)
+
+class Sighting(models.Model):
+    et = models.ForeignKey(ExtraTerrestrial)
+    place = models.CharField(max_length=100)
 
 # Other models
 

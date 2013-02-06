@@ -13,20 +13,27 @@ import time
 import os
 import sys
 import traceback
-from urlparse import urljoin
+try:
+    from urllib.parse import urljoin
+except ImportError:     # Python 2
+    from urlparse import urljoin
 
 from django import template
-from django.template import base as template_base, RequestContext, Template, Context
+from django.template import (base as template_base, Context, RequestContext,
+    Template)
 from django.core import urlresolvers
 from django.template import loader
 from django.template.loaders import app_directories, filesystem, cached
-from django.test import RequestFactory
+from django.test import RequestFactory, TestCase
 from django.test.utils import (setup_test_template_loader,
     restore_template_loaders, override_settings)
 from django.utils import unittest
+from django.utils.encoding import python_2_unicode_compatible
 from django.utils.formats import date_format
+from django.utils._os import upath
 from django.utils.translation import activate, deactivate, ugettext as _
 from django.utils.safestring import mark_safe
+from django.utils import six
 from django.utils.tzinfo import LocalTimezone
 
 from .callables import CallableVariablesTests
@@ -42,7 +49,7 @@ from .response import (TemplateResponseTest, CacheMiddlewareTest,
 try:
     from .loaders import RenderToStringTest, EggLoaderTest
 except ImportError as e:
-    if "pkg_resources" in e.message:
+    if "pkg_resources" in e.args[0]:
         pass # If setuptools isn't installed, that's fine. Just move on.
     else:
         raise
@@ -144,21 +151,14 @@ class SilentAttrClass(object):
         raise SomeException
     b = property(b)
 
+@python_2_unicode_compatible
 class UTF8Class:
-    "Class whose __str__ returns non-ASCII data"
+    "Class whose __str__ returns non-ASCII data on Python 2"
     def __str__(self):
-        return 'ŠĐĆŽćžšđ'.encode('utf-8')
+        return 'ŠĐĆŽćžšđ'
 
-class Templates(unittest.TestCase):
-    def setUp(self):
-        self.old_static_url = settings.STATIC_URL
-        self.old_media_url = settings.MEDIA_URL
-        settings.STATIC_URL = "/static/"
-        settings.MEDIA_URL = "/media/"
-
-    def tearDown(self):
-        settings.STATIC_URL = self.old_static_url
-        settings.MEDIA_URL = self.old_media_url
+@override_settings(MEDIA_URL="/media/", STATIC_URL="/static/")
+class Templates(TestCase):
 
     def test_loaders_security(self):
         ad_loader = app_directories.Loader()
@@ -223,11 +223,11 @@ class Templates(unittest.TestCase):
             loader.template_source_loaders = (filesystem.Loader(),)
 
             # We rely on the fact that runtests.py sets up TEMPLATE_DIRS to
-            # point to a directory containing a 404.html file. Also that
+            # point to a directory containing a login.html file. Also that
             # the file system and app directories loaders both inherit the
             # load_template method from the BaseLoader class, so we only need
             # to test one of them.
-            load_name = '404.html'
+            load_name = 'login.html'
             template = loader.get_template(load_name)
             template_name = template.nodelist[0].source[0].name
             self.assertTrue(template_name.endswith(load_name),
@@ -366,6 +366,20 @@ class Templates(unittest.TestCase):
         with self.assertRaises(urlresolvers.NoReverseMatch):
             t.render(c)
 
+    def test_url_explicit_exception_for_old_syntax_at_run_time(self):
+        # Regression test for #19280
+        t = Template('{% url path.to.view %}')      # not quoted = old syntax
+        c = Context()
+        with six.assertRaisesRegex(self, urlresolvers.NoReverseMatch,
+                "The syntax changed in Django 1.5, see the docs."):
+            t.render(c)
+
+    def test_url_explicit_exception_for_old_syntax_at_compile_time(self):
+        # Regression test for #19392
+        with six.assertRaisesRegex(self, template.TemplateSyntaxError,
+                "The syntax of 'url' changed in Django 1.5, see the docs."):
+            t = Template('{% url my-view %}')      # not a variable = old syntax
+
     @override_settings(DEBUG=True, TEMPLATE_DEBUG=True)
     def test_no_wrapped_exception(self):
         """
@@ -399,13 +413,12 @@ class Templates(unittest.TestCase):
         template_tests.update(filter_tests)
 
         cache_loader = setup_test_template_loader(
-            dict([(name, t[0]) for name, t in template_tests.iteritems()]),
+            dict([(name, t[0]) for name, t in six.iteritems(template_tests)]),
             use_cached_loader=True,
         )
 
         failures = []
-        tests = template_tests.items()
-        tests.sort()
+        tests = sorted(template_tests.items())
 
         # Turn TEMPLATE_DEBUG off, because tests assume that.
         old_td, settings.TEMPLATE_DEBUG = settings.TEMPLATE_DEBUG, False
@@ -414,10 +427,10 @@ class Templates(unittest.TestCase):
         old_invalid = settings.TEMPLATE_STRING_IF_INVALID
         expected_invalid_str = 'INVALID'
 
-        #Set ALLOWED_INCLUDE_ROOTS so that ssi works.
+        # Set ALLOWED_INCLUDE_ROOTS so that ssi works.
         old_allowed_include_roots = settings.ALLOWED_INCLUDE_ROOTS
         settings.ALLOWED_INCLUDE_ROOTS = (
-            os.path.dirname(os.path.abspath(__file__)),
+            os.path.dirname(os.path.abspath(upath(__file__))),
         )
 
         # Warm the URL reversing cache. This ensures we don't pay the cost
@@ -508,7 +521,7 @@ class Templates(unittest.TestCase):
     def get_template_tests(self):
         # SYNTAX --
         # 'template_name': ('template contents', 'context dict', 'expected string output' or Exception class)
-        basedir = os.path.dirname(os.path.abspath(__file__))
+        basedir = os.path.dirname(os.path.abspath(upath(__file__)))
         tests = {
             ### BASIC SYNTAX ################################################
 
@@ -1308,7 +1321,7 @@ class Templates(unittest.TestCase):
             # retrieving language information
             'i18n28_2': ('{% load i18n %}{% get_language_info for "de" as l %}{{ l.code }}: {{ l.name }}/{{ l.name_local }} bidi={{ l.bidi }}', {}, 'de: German/Deutsch bidi=False'),
             'i18n29': ('{% load i18n %}{% get_language_info for LANGUAGE_CODE as l %}{{ l.code }}: {{ l.name }}/{{ l.name_local }} bidi={{ l.bidi }}', {'LANGUAGE_CODE': 'fi'}, 'fi: Finnish/suomi bidi=False'),
-            'i18n30': ('{% load i18n %}{% get_language_info_list for langcodes as langs %}{% for l in langs %}{{ l.code }}: {{ l.name }}/{{ l.name_local }} bidi={{ l.bidi }}; {% endfor %}', {'langcodes': ['it', 'no']}, 'it: Italian/italiano bidi=False; no: Norwegian/Norsk bidi=False; '),
+            'i18n30': ('{% load i18n %}{% get_language_info_list for langcodes as langs %}{% for l in langs %}{{ l.code }}: {{ l.name }}/{{ l.name_local }} bidi={{ l.bidi }}; {% endfor %}', {'langcodes': ['it', 'no']}, 'it: Italian/italiano bidi=False; no: Norwegian/norsk bidi=False; '),
             'i18n31': ('{% load i18n %}{% get_language_info_list for langcodes as langs %}{% for l in langs %}{{ l.code }}: {{ l.name }}/{{ l.name_local }} bidi={{ l.bidi }}; {% endfor %}', {'langcodes': (('sl', 'Slovenian'), ('fa', 'Persian'))}, 'sl: Slovenian/Sloven\u0161\u010dina bidi=False; fa: Persian/\u0641\u0627\u0631\u0633\u06cc bidi=True; '),
             'i18n32': ('{% load i18n %}{{ "hu"|language_name }} {{ "hu"|language_name_local }} {{ "hu"|language_bidi }}', {}, 'Hungarian Magyar False'),
             'i18n33': ('{% load i18n %}{{ langcode|language_name }} {{ langcode|language_name_local }} {{ langcode|language_bidi }}', {'langcode': 'nl'}, 'Dutch Nederlands False'),
@@ -1448,8 +1461,9 @@ class Templates(unittest.TestCase):
             'widthratio04': ('{% widthratio a b 100 %}', {'a':50,'b':100}, '50'),
             'widthratio05': ('{% widthratio a b 100 %}', {'a':100,'b':100}, '100'),
 
-            # 62.5 should round to 63
-            'widthratio06': ('{% widthratio a b 100 %}', {'a':50,'b':80}, '63'),
+            # 62.5 should round to 63 on Python 2 and 62 on Python 3
+            # See http://docs.python.org/py3k/whatsnew/3.0.html
+            'widthratio06': ('{% widthratio a b 100 %}', {'a':50,'b':80}, '62' if six.PY3 else '63'),
 
             # 71.4 should round to 71
             'widthratio07': ('{% widthratio a b 100 %}', {'a':50,'b':70}, '71'),
@@ -1461,6 +1475,14 @@ class Templates(unittest.TestCase):
 
             # #10043: widthratio should allow max_width to be a variable
             'widthratio11': ('{% widthratio a b c %}', {'a':50,'b':100, 'c': 100}, '50'),
+
+            # #18739: widthratio should handle None args consistently with non-numerics
+            'widthratio12a': ('{% widthratio a b c %}', {'a':'a','b':100,'c':100}, ''),
+            'widthratio12b': ('{% widthratio a b c %}', {'a':None,'b':100,'c':100}, ''),
+            'widthratio13a': ('{% widthratio a b c %}', {'a':0,'b':'b','c':100}, ''),
+            'widthratio13b': ('{% widthratio a b c %}', {'a':0,'b':None,'c':100}, ''),
+            'widthratio14a': ('{% widthratio a b c %}', {'a':0,'b':100,'c':'c'}, template.TemplateSyntaxError),
+            'widthratio14b': ('{% widthratio a b c %}', {'a':0,'b':100,'c':None}, template.TemplateSyntaxError),
 
             ### WITH TAG ########################################################
             'with01': ('{% with key=dict.key %}{{ key }}{% endwith %}', {'dict': {'key': 50}}, '50'),
@@ -1634,7 +1656,7 @@ class TemplateTagLoading(unittest.TestCase):
     def setUp(self):
         self.old_path = sys.path[:]
         self.old_apps = settings.INSTALLED_APPS
-        self.egg_dir = '%s/eggs' % os.path.dirname(__file__)
+        self.egg_dir = '%s/eggs' % os.path.dirname(upath(__file__))
         self.old_tag_modules = template_base.templatetags_modules
         template_base.templatetags_modules = []
 

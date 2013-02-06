@@ -5,6 +5,7 @@ from operator import attrgetter
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase, skipUnlessDBFeature
+from django.utils import six
 from django.utils import tzinfo
 
 from .models import (Worker, Article, Party, Event, Department,
@@ -38,7 +39,7 @@ class ModelTests(TestCase):
         # Empty strings should be returned as Unicode
         a = Article.objects.get(pk=a.pk)
         self.assertEqual(a.misc_data, '')
-        self.assertIs(type(a.misc_data), unicode)
+        self.assertIs(type(a.misc_data), six.text_type)
 
     def test_long_textfield(self):
         # TextFields can hold more than 4000 characters (this was broken in
@@ -70,7 +71,8 @@ class ModelTests(TestCase):
                 datetime.date(1999, 12, 31),
                 datetime.date(1998, 12, 31),
             ],
-            attrgetter("when")
+            attrgetter("when"),
+            ordered=False
         )
         self.assertQuerysetEqual(
             Party.objects.filter(when__year=1998), [
@@ -84,14 +86,16 @@ class ModelTests(TestCase):
                 datetime.date(1999, 12, 31),
                 datetime.date(1998, 12, 31),
             ],
-            attrgetter("when")
+            attrgetter("when"),
+            ordered=False
         )
         self.assertQuerysetEqual(
             Party.objects.filter(when__month="12"), [
                 datetime.date(1999, 12, 31),
                 datetime.date(1998, 12, 31),
             ],
-            attrgetter("when")
+            attrgetter("when"),
+            ordered=False
         )
         self.assertQuerysetEqual(
             Party.objects.filter(when__year="1998"), [
@@ -138,7 +142,7 @@ class ModelTests(TestCase):
         # Check Department and Worker (non-default PK type)
         d = Department.objects.create(id=10, name="IT")
         w = Worker.objects.create(department=d, name="Full-time")
-        self.assertEqual(unicode(w), "Full-time")
+        self.assertEqual(six.text_type(w), "Full-time")
 
     def test_broken_unicode(self):
         # Models with broken unicode methods should still have a printable repr

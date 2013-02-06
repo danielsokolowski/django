@@ -3,13 +3,14 @@ from __future__ import absolute_import, unicode_literals
 
 import datetime
 
-from django.conf import settings
 from django.forms import *
 from django.forms.extras import SelectDateWidget
 from django.forms.util import ErrorList
 from django.test import TestCase
+from django.test.utils import override_settings
+from django.utils import six
 from django.utils import translation
-from django.utils.encoding import force_unicode, smart_unicode
+from django.utils.encoding import force_text, smart_text, python_2_unicode_compatible
 
 from .error_messages import AssertFormErrorsMixin
 
@@ -427,6 +428,23 @@ class FormsExtraTestCase(TestCase, AssertFormErrorsMixin):
         # If insufficient data is provided, None is substituted
         self.assertFormErrors(['This field is required.'], f.clean, ['some text',['JP']])
 
+        # test with no initial data
+        self.assertTrue(f._has_changed(None, ['some text', ['J','P'], ['2007-04-25','6:24:00']]))
+
+        # test when the data is the same as initial
+        self.assertFalse(f._has_changed('some text,JP,2007-04-25 06:24:00',
+            ['some text', ['J','P'], ['2007-04-25','6:24:00']]))
+
+        # test when the first widget's data has changed
+        self.assertTrue(f._has_changed('some text,JP,2007-04-25 06:24:00',
+            ['other text', ['J','P'], ['2007-04-25','6:24:00']]))
+
+        # test when the last widget's data has changed. this ensures that it is not
+        # short circuiting while testing the widgets.
+        self.assertTrue(f._has_changed('some text,JP,2007-04-25 06:24:00',
+            ['some text', ['J','P'], ['2009-04-25','11:44:00']]))
+
+
         class ComplexFieldForm(Form):
             field1 = ComplexField(widget=w)
 
@@ -551,21 +569,31 @@ class FormsExtraTestCase(TestCase, AssertFormErrorsMixin):
         f = GenericIPAddressField(unpack_ipv4=True)
         self.assertEqual(f.clean('::ffff:0a0a:0a0a'), '10.10.10.10')
 
-    def test_smart_unicode(self):
+    def test_smart_text(self):
         class Test:
-            def __str__(self):
-               return b'ŠĐĆŽćžšđ'
+            if six.PY3:
+                def __str__(self):
+                    return 'ŠĐĆŽćžšđ'
+            else:
+                def __str__(self):
+                    return 'ŠĐĆŽćžšđ'.encode('utf-8')
 
         class TestU:
-            def __str__(self):
-               return 'Foo'
-            def __unicode__(self):
-               return '\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111'
+            if six.PY3:
+                def __str__(self):
+                    return 'ŠĐĆŽćžšđ'
+                def __bytes__(self):
+                    return b'Foo'
+            else:
+                def __str__(self):
+                    return b'Foo'
+                def __unicode__(self):
+                    return '\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111'
 
-        self.assertEqual(smart_unicode(Test()), '\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111')
-        self.assertEqual(smart_unicode(TestU()), '\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111')
-        self.assertEqual(smart_unicode(1), '1')
-        self.assertEqual(smart_unicode('foo'), 'foo')
+        self.assertEqual(smart_text(Test()), '\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111')
+        self.assertEqual(smart_text(TestU()), '\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111')
+        self.assertEqual(smart_text(1), '1')
+        self.assertEqual(smart_text('foo'), 'foo')
 
     def test_accessing_clean(self):
         class UserForm(Form):
@@ -585,13 +613,14 @@ class FormsExtraTestCase(TestCase, AssertFormErrorsMixin):
         self.assertEqual(f.cleaned_data['username'], 'sirrobin')
 
     def test_overriding_errorlist(self):
+        @python_2_unicode_compatible
         class DivErrorList(ErrorList):
-            def __unicode__(self):
+            def __str__(self):
                 return self.as_divs()
 
             def as_divs(self):
                 if not self: return ''
-                return '<div class="errorlist">%s</div>' % ''.join(['<div class="error">%s</div>' % force_unicode(e) for e in self])
+                return '<div class="errorlist">%s</div>' % ''.join(['<div class="error">%s</div>' % force_text(e) for e in self])
 
         class CommentForm(Form):
             name = CharField(max_length=50, required=False)
@@ -601,8 +630,8 @@ class FormsExtraTestCase(TestCase, AssertFormErrorsMixin):
         data = dict(email='invalid')
         f = CommentForm(data, auto_id=False, error_class=DivErrorList)
         self.assertHTMLEqual(f.as_p(), """<p>Name: <input type="text" name="name" maxlength="50" /></p>
-<div class="errorlist"><div class="error">Enter a valid e-mail address.</div></div>
-<p>Email: <input type="text" name="email" value="invalid" /></p>
+<div class="errorlist"><div class="error">Enter a valid email address.</div></div>
+<p>Email: <input type="email" name="email" value="invalid" /></p>
 <div class="errorlist"><div class="error">This field is required.</div></div>
 <p>Comment: <input type="text" name="comment" /></p>""")
 
@@ -630,17 +659,14 @@ class FormsExtraTestCase(TestCase, AssertFormErrorsMixin):
         self.assertFalse(b.has_changed())
 
 
-
+@override_settings(USE_L10N=True)
 class FormsExtraL10NTestCase(TestCase):
     def setUp(self):
         super(FormsExtraL10NTestCase, self).setUp()
-        self.old_use_l10n = getattr(settings, 'USE_L10N', False)
-        settings.USE_L10N = True
         translation.activate('nl')
 
     def tearDown(self):
         translation.deactivate()
-        settings.USE_L10N = self.old_use_l10n
         super(FormsExtraL10NTestCase, self).tearDown()
 
     def test_l10n(self):
@@ -716,8 +742,8 @@ class FormsExtraL10NTestCase(TestCase):
 
     def test_l10n_date_changed(self):
         """
-        Ensure that SelectDateWidget._has_changed() works correctly with a
-        localized date format.
+        Ensure that DateField._has_changed() with SelectDateWidget works
+        correctly with a localized date format.
         Refs #17165.
         """
         # With Field.show_hidden_initial=False -----------------------

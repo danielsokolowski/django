@@ -5,6 +5,7 @@ from django.forms import EmailField, IntegerField
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import SimpleTestCase, TestCase, skipUnlessDBFeature
+from django.utils import six
 from django.utils.unittest import skip
 
 from .models import Person
@@ -51,6 +52,46 @@ class AssertNumQueriesTests(TestCase):
             self.client.get("/test_utils/get_person/%s/" % person.pk)
             self.client.get("/test_utils/get_person/%s/" % person.pk)
         self.assertNumQueries(2, test_func)
+
+
+class AssertQuerysetEqualTests(TestCase):
+    def setUp(self):
+        self.p1 = Person.objects.create(name='p1')
+        self.p2 = Person.objects.create(name='p2')
+
+    def test_ordered(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name'),
+            [repr(self.p1), repr(self.p2)]
+        )
+
+    def test_unordered(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name'),
+            [repr(self.p2), repr(self.p1)],
+            ordered=False
+        )
+
+    def test_transform(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name'),
+            [self.p1.pk, self.p2.pk],
+            transform=lambda x: x.pk
+        )
+
+    def test_undefined_order(self):
+        # Using an unordered queryset with more than one ordered value
+        # is an error.
+        with self.assertRaises(ValueError):
+            self.assertQuerysetEqual(
+                Person.objects.all(),
+                [repr(self.p1), repr(self.p2)]
+            )
+        # No error for one value.
+        self.assertQuerysetEqual(
+            Person.objects.filter(name='p1'),
+            [repr(self.p1)]
+        )
 
 
 class AssertNumQueriesContextManagerTests(TestCase):
@@ -136,15 +177,15 @@ class AssertTemplateUsedContextManagerTests(TestCase):
             pass
 
     def test_error_message(self):
-        with self.assertRaisesRegexp(AssertionError, r'^template_used/base\.html'):
+        with six.assertRaisesRegex(self, AssertionError, r'^template_used/base\.html'):
             with self.assertTemplateUsed('template_used/base.html'):
                 pass
 
-        with self.assertRaisesRegexp(AssertionError, r'^template_used/base\.html'):
+        with six.assertRaisesRegex(self, AssertionError, r'^template_used/base\.html'):
             with self.assertTemplateUsed(template_name='template_used/base.html'):
                 pass
 
-        with self.assertRaisesRegexp(AssertionError, r'^template_used/base\.html.*template_used/alternative\.html$'):
+        with six.assertRaisesRegex(self, AssertionError, r'^template_used/base\.html.*template_used/alternative\.html$'):
             with self.assertTemplateUsed('template_used/base.html'):
                 render_to_string('template_used/alternative.html')
 
@@ -179,24 +220,27 @@ class SaveRestoreWarningState(TestCase):
         # of save_warnings_state/restore_warnings_state (e.g. just
         # warnings.resetwarnings()) , but it is difficult to test more.
         import warnings
-        self.save_warnings_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
 
-        class MyWarning(Warning):
-            pass
+            self.save_warnings_state()
 
-        # Add a filter that causes an exception to be thrown, so we can catch it
-        warnings.simplefilter("error", MyWarning)
-        self.assertRaises(Warning, lambda: warnings.warn("warn", MyWarning))
+            class MyWarning(Warning):
+                pass
 
-        # Now restore.
-        self.restore_warnings_state()
-        # After restoring, we shouldn't get an exception. But we don't want a
-        # warning printed either, so we have to silence the warning.
-        warnings.simplefilter("ignore", MyWarning)
-        warnings.warn("warn", MyWarning)
+            # Add a filter that causes an exception to be thrown, so we can catch it
+            warnings.simplefilter("error", MyWarning)
+            self.assertRaises(Warning, lambda: warnings.warn("warn", MyWarning))
 
-        # Remove the filter we just added.
-        self.restore_warnings_state()
+            # Now restore.
+            self.restore_warnings_state()
+            # After restoring, we shouldn't get an exception. But we don't want a
+            # warning printed either, so we have to silence the warning.
+            warnings.simplefilter("ignore", MyWarning)
+            warnings.warn("warn", MyWarning)
+
+            # Remove the filter we just added.
+            self.restore_warnings_state()
 
 
 class HTMLEqualTests(TestCase):
@@ -449,6 +493,46 @@ class HTMLEqualTests(TestCase):
         self.assertContains(response, '<p class="help">Some help text for the title (with unicode ŠĐĆŽćžšđ)</p>', html=True)
 
 
+class XMLEqualTests(TestCase):
+    def test_simple_equal(self):
+        xml1 = "<elem attr1='a' attr2='b' />"
+        xml2 = "<elem attr1='a' attr2='b' />"
+        self.assertXMLEqual(xml1, xml2)
+
+    def test_simple_equal_unordered(self):
+        xml1 = "<elem attr1='a' attr2='b' />"
+        xml2 = "<elem attr2='b' attr1='a' />"
+        self.assertXMLEqual(xml1, xml2)
+
+    def test_simple_equal_raise(self):
+        xml1 = "<elem attr1='a' />"
+        xml2 = "<elem attr2='b' attr1='a' />"
+        with self.assertRaises(AssertionError):
+            self.assertXMLEqual(xml1, xml2)
+
+    def test_simple_not_equal(self):
+        xml1 = "<elem attr1='a' attr2='c' />"
+        xml2 = "<elem attr1='a' attr2='b' />"
+        self.assertXMLNotEqual(xml1, xml2)
+
+    def test_simple_not_equal_raise(self):
+        xml1 = "<elem attr1='a' attr2='b' />"
+        xml2 = "<elem attr2='b' attr1='a' />"
+        with self.assertRaises(AssertionError):
+            self.assertXMLNotEqual(xml1, xml2)
+
+    def test_parsing_errors(self):
+        xml_unvalid = "<elem attr1='a attr2='b' />"
+        xml2 = "<elem attr2='b' attr1='a' />"
+        with self.assertRaises(AssertionError):
+            self.assertXMLNotEqual(xml_unvalid, xml2)
+
+    def test_comment_root(self):
+        xml1 = "<?xml version='1.0'?><!-- comment1 --><elem attr1='a' attr2='b' />"
+        xml2 = "<?xml version='1.0'?><!-- comment2 --><elem attr2='b' attr1='a' />"
+        self.assertXMLEqual(xml1, xml2)
+
+
 class SkippingExtraTests(TestCase):
     fixtures = ['should_not_be_loaded.json']
 
@@ -475,7 +559,7 @@ class AssertRaisesMsgTest(SimpleTestCase):
 class AssertFieldOutputTests(SimpleTestCase):
 
     def test_assert_field_output(self):
-        error_invalid = ['Enter a valid e-mail address.']
+        error_invalid = ['Enter a valid email address.']
         self.assertFieldOutput(EmailField, {'a@a.com': 'a@a.com'}, {'aaa': error_invalid})
         self.assertRaises(AssertionError, self.assertFieldOutput, EmailField, {'a@a.com': 'a@a.com'}, {'aaa': error_invalid + ['Another error']})
         self.assertRaises(AssertionError, self.assertFieldOutput, EmailField, {'a@a.com': 'Wrong output'}, {'aaa': error_invalid})
@@ -493,13 +577,7 @@ __test__ = {"API_TEST": r"""
 # Standard doctests do fairly
 >>> import json
 >>> from django.utils.xmlutils import SimplerXMLGenerator
->>> from StringIO import StringIO
-
->>> def produce_long():
-...     return 42L
-
->>> def produce_int():
-...     return 42
+>>> from django.utils.six import StringIO
 
 >>> def produce_json():
 ...     return json.dumps(['foo', {'bar': ('baz', None, 1.0, 2), 'whiz': 42}])
@@ -529,14 +607,6 @@ __test__ = {"API_TEST": r"""
 ...     xml.endElement("bar")
 ...     return stream.getvalue()
 
-# Long values are normalized and are comparable to normal integers ...
->>> produce_long()
-42
-
-# ... and vice versa
->>> produce_int()
-42L
-
 # JSON output is normalized for field order, so it doesn't matter
 # which order json dictionary attributes are listed in output
 >>> produce_json()
@@ -560,3 +630,21 @@ __test__ = {"API_TEST": r"""
 '<foo bbb="2.0" aaa="1.0">Hello</foo><bar ddd="4.0" ccc="3.0"></bar>'
 
 """}
+
+if not six.PY3:
+    __test__["API_TEST"] += """
+>>> def produce_long():
+...     return 42L
+
+>>> def produce_int():
+...     return 42
+
+# Long values are normalized and are comparable to normal integers ...
+>>> produce_long()
+42
+
+# ... and vice versa
+>>> produce_int()
+42L
+
+"""

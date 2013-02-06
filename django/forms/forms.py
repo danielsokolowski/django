@@ -12,8 +12,10 @@ from django.forms.util import flatatt, ErrorDict, ErrorList
 from django.forms.widgets import Media, media_property, TextInput, Textarea
 from django.utils.datastructures import SortedDict
 from django.utils.html import conditional_escape, format_html
-from django.utils.encoding import StrAndUnicode, smart_unicode, force_unicode
+from django.utils.encoding import smart_text, force_text, python_2_unicode_compatible
 from django.utils.safestring import mark_safe
+from django.utils.translation import ugettext as _
+from django.utils import six
 
 
 __all__ = ('BaseForm', 'Form')
@@ -30,14 +32,14 @@ def get_declared_fields(bases, attrs, with_base_fields=True):
     """
     Create a list of form field instances from the passed in 'attrs', plus any
     similar fields on the base classes (in 'bases'). This is used by both the
-    Form and ModelForm metclasses.
+    Form and ModelForm metaclasses.
 
     If 'with_base_fields' is True, all fields from the bases are used.
     Otherwise, only fields in the 'declared_fields' attribute on the bases are
     used. The distinction is useful in ModelForm subclassing.
-    Also integrates any additional media definitions
+    Also integrates any additional media definitions.
     """
-    fields = [(field_name, attrs.pop(field_name)) for field_name, obj in attrs.items() if isinstance(obj, Field)]
+    fields = [(field_name, attrs.pop(field_name)) for field_name, obj in list(six.iteritems(attrs)) if isinstance(obj, Field)]
     fields.sort(key=lambda x: x[1].creation_counter)
 
     # If this class is subclassing another Form, add that Form's fields.
@@ -46,11 +48,11 @@ def get_declared_fields(bases, attrs, with_base_fields=True):
     if with_base_fields:
         for base in bases[::-1]:
             if hasattr(base, 'base_fields'):
-                fields = base.base_fields.items() + fields
+                fields = list(six.iteritems(base.base_fields)) + fields
     else:
         for base in bases[::-1]:
             if hasattr(base, 'declared_fields'):
-                fields = base.declared_fields.items() + fields
+                fields = list(six.iteritems(base.declared_fields)) + fields
 
     return SortedDict(fields)
 
@@ -67,7 +69,8 @@ class DeclarativeFieldsMetaclass(type):
             new_class.media = media_property(new_class)
         return new_class
 
-class BaseForm(StrAndUnicode):
+@python_2_unicode_compatible
+class BaseForm(object):
     # This is the main implementation of all the Form logic. Note that this
     # class is different than Form. See the comments by the Form class for more
     # information. Any improvements to the form API should be made to *this*
@@ -94,7 +97,7 @@ class BaseForm(StrAndUnicode):
         # self.base_fields.
         self.fields = copy.deepcopy(self.base_fields)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.as_table()
 
     def __iter__(self):
@@ -109,12 +112,12 @@ class BaseForm(StrAndUnicode):
             raise KeyError('Key %r not found in Form' % name)
         return BoundField(self, field, name)
 
-    def _get_errors(self):
+    @property
+    def errors(self):
         "Returns an ErrorDict for the data provided for the form"
         if self._errors is None:
             self.full_clean()
         return self._errors
-    errors = property(_get_errors)
 
     def is_valid(self):
         """
@@ -146,11 +149,14 @@ class BaseForm(StrAndUnicode):
         for name, field in self.fields.items():
             html_class_attr = ''
             bf = self[name]
-            bf_errors = self.error_class([conditional_escape(error) for error in bf.errors]) # Escape and cache in local variable.
+            # Escape and cache in local variable.
+            bf_errors = self.error_class([conditional_escape(error) for error in bf.errors])
             if bf.is_hidden:
                 if bf_errors:
-                    top_errors.extend(['(Hidden field %s) %s' % (name, force_unicode(e)) for e in bf_errors])
-                hidden_fields.append(unicode(bf))
+                    top_errors.extend(
+                        [_('(Hidden field %(name)s) %(error)s') % {'name': name, 'error': force_text(e)}
+                         for e in bf_errors])
+                hidden_fields.append(six.text_type(bf))
             else:
                 # Create a 'class="..."' atribute if the row should have any
                 # CSS classes applied.
@@ -159,10 +165,10 @@ class BaseForm(StrAndUnicode):
                     html_class_attr = ' class="%s"' % css_classes
 
                 if errors_on_separate_row and bf_errors:
-                    output.append(error_row % force_unicode(bf_errors))
+                    output.append(error_row % force_text(bf_errors))
 
                 if bf.label:
-                    label = conditional_escape(force_unicode(bf.label))
+                    label = conditional_escape(force_text(bf.label))
                     # Only add the suffix if the label does not end in
                     # punctuation.
                     if self.label_suffix:
@@ -173,20 +179,20 @@ class BaseForm(StrAndUnicode):
                     label = ''
 
                 if field.help_text:
-                    help_text = help_text_html % force_unicode(field.help_text)
+                    help_text = help_text_html % force_text(field.help_text)
                 else:
                     help_text = ''
 
                 output.append(normal_row % {
-                    'errors': force_unicode(bf_errors),
-                    'label': force_unicode(label),
-                    'field': unicode(bf),
+                    'errors': force_text(bf_errors),
+                    'label': force_text(label),
+                    'field': six.text_type(bf),
                     'help_text': help_text,
                     'html_class_attr': html_class_attr
                 })
 
         if top_errors:
-            output.insert(0, error_row % force_unicode(top_errors))
+            output.insert(0, error_row % force_text(top_errors))
 
         if hidden_fields: # Insert any hidden fields in the last row.
             str_hidden = ''.join(hidden_fields)
@@ -270,8 +276,6 @@ class BaseForm(StrAndUnicode):
         self._clean_fields()
         self._clean_form()
         self._post_clean()
-        if self._errors:
-            del self.cleaned_data
 
     def _clean_fields(self):
         for name, field in self.fields.items():
@@ -322,7 +326,8 @@ class BaseForm(StrAndUnicode):
         """
         return bool(self.changed_data)
 
-    def _get_changed_data(self):
+    @property
+    def changed_data(self):
         if self._changed_data is None:
             self._changed_data = []
             # XXX: For now we're asking the individual widgets whether or not the
@@ -341,12 +346,18 @@ class BaseForm(StrAndUnicode):
                     hidden_widget = field.hidden_widget()
                     initial_value = hidden_widget.value_from_datadict(
                         self.data, self.files, initial_prefixed_name)
-                if field.widget._has_changed(initial_value, data_value):
+                if hasattr(field.widget, '_has_changed'):
+                    warnings.warn("The _has_changed method on widgets is deprecated,"
+                        " define it at field level instead.",
+                        PendingDeprecationWarning, stacklevel=2)
+                    if field.widget._has_changed(initial_value, data_value):
+                        self._changed_data.append(name)
+                elif field._has_changed(initial_value, data_value):
                     self._changed_data.append(name)
         return self._changed_data
-    changed_data = property(_get_changed_data)
 
-    def _get_media(self):
+    @property
+    def media(self):
         """
         Provide a description of all media required to render the widgets on this form
         """
@@ -354,7 +365,6 @@ class BaseForm(StrAndUnicode):
         for field in self.fields.values():
             media = media + field.widget.media
         return media
-    media = property(_get_media)
 
     def is_multipart(self):
         """
@@ -380,16 +390,16 @@ class BaseForm(StrAndUnicode):
         """
         return [field for field in self if not field.is_hidden]
 
-class Form(BaseForm):
+class Form(six.with_metaclass(DeclarativeFieldsMetaclass, BaseForm)):
     "A collection of Fields, plus their associated data."
     # This is a separate class from BaseForm in order to abstract the way
     # self.fields is specified. This class (Form) is the one that does the
     # fancy metaclass stuff purely for the semantic sugar -- it allows one
     # to define a form using declarative syntax.
     # BaseForm itself has no way of designating self.fields.
-    __metaclass__ = DeclarativeFieldsMetaclass
 
-class BoundField(StrAndUnicode):
+@python_2_unicode_compatible
+class BoundField(object):
     "A Field plus data"
     def __init__(self, form, field, name):
         self.form = form
@@ -404,7 +414,7 @@ class BoundField(StrAndUnicode):
             self.label = self.field.label
         self.help_text = field.help_text or ''
 
-    def __unicode__(self):
+    def __str__(self):
         """Renders this field as an HTML widget."""
         if self.field.show_hidden_initial:
             return self.as_widget() + self.as_hidden(only_initial=True)
@@ -426,13 +436,13 @@ class BoundField(StrAndUnicode):
     def __getitem__(self, idx):
         return list(self.__iter__())[idx]
 
-    def _errors(self):
+    @property
+    def errors(self):
         """
         Returns an ErrorList for this field. Returns an empty ErrorList
         if there are none.
         """
         return self.form.errors.get(self.name, self.form.error_class())
-    errors = property(_errors)
 
     def as_widget(self, widget=None, attrs=None, only_initial=False):
         """
@@ -473,12 +483,12 @@ class BoundField(StrAndUnicode):
         """
         return self.as_widget(self.field.hidden_widget(), attrs, **kwargs)
 
-    def _data(self):
+    @property
+    def data(self):
         """
         Returns the data for this BoundField, or None if it wasn't given.
         """
         return self.field.widget.value_from_datadict(self.form.data, self.form.files, self.html_name)
-    data = property(_data)
 
     def value(self):
         """
@@ -526,25 +536,26 @@ class BoundField(StrAndUnicode):
             extra_classes.add(self.form.required_css_class)
         return ' '.join(extra_classes)
 
-    def _is_hidden(self):
+    @property
+    def is_hidden(self):
         "Returns True if this BoundField's widget is hidden."
         return self.field.widget.is_hidden
-    is_hidden = property(_is_hidden)
 
-    def _auto_id(self):
+    @property
+    def auto_id(self):
         """
         Calculates and returns the ID attribute for this BoundField, if the
         associated Form has specified auto_id. Returns an empty string otherwise.
         """
         auto_id = self.form.auto_id
-        if auto_id and '%s' in smart_unicode(auto_id):
-            return smart_unicode(auto_id) % self.html_name
+        if auto_id and '%s' in smart_text(auto_id):
+            return smart_text(auto_id) % self.html_name
         elif auto_id:
             return self.html_name
         return ''
-    auto_id = property(_auto_id)
 
-    def _id_for_label(self):
+    @property
+    def id_for_label(self):
         """
         Wrapper around the field widget's `id_for_label` method.
         Useful, for example, for focusing on this field regardless of whether
@@ -553,4 +564,3 @@ class BoundField(StrAndUnicode):
         widget = self.field.widget
         id_ = widget.attrs.get('id') or self.auto_id
         return widget.id_for_label(id_)
-    id_for_label = property(_id_for_label)

@@ -68,6 +68,7 @@ class Command(NoArgsCommand):
                 if router.allow_syncdb(db, m)])
             for app in models.get_apps()
         ]
+
         def model_installed(model):
             opts = model._meta
             converter = connection.introspection.table_name_converter
@@ -75,7 +76,7 @@ class Command(NoArgsCommand):
                 (opts.auto_created and converter(opts.auto_created._meta.db_table) in tables))
 
         manifest = SortedDict(
-            (app_name, filter(model_installed, model_list))
+            (app_name, list(filter(model_installed, model_list)))
             for app_name, model_list in all_models
         )
 
@@ -100,7 +101,6 @@ class Command(NoArgsCommand):
                 for statement in sql:
                     cursor.execute(statement)
                 tables.append(connection.introspection.table_name_converter(model._meta.db_table))
-
 
         transaction.commit_unless_managed(using=db)
 

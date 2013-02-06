@@ -10,11 +10,12 @@ from django.contrib.admin.templatetags.admin_static import static
 from django.core.urlresolvers import reverse
 from django.forms.widgets import RadioFieldRenderer
 from django.forms.util import flatatt
-from django.utils.html import escape, format_html, format_html_join
+from django.utils.html import escape, format_html, format_html_join, smart_urlquote
 from django.utils.text import Truncator
 from django.utils.translation import ugettext as _
 from django.utils.safestring import mark_safe
-from django.utils.encoding import force_unicode
+from django.utils.encoding import force_text
+from django.utils import six
 
 
 class FilteredSelectMultiple(forms.SelectMultiple):
@@ -95,7 +96,7 @@ class AdminRadioFieldRenderer(RadioFieldRenderer):
         return format_html('<ul{0}>\n{1}\n</ul>',
                            flatatt(self.attrs),
                            format_html_join('\n', '<li>{0}</li>',
-                                            ((force_unicode(w),) for w in self)))
+                                            ((force_text(w),) for w in self)))
 
 class AdminRadioSelect(forms.RadioSelect):
     renderer = AdminRadioFieldRenderer
@@ -121,7 +122,7 @@ def url_params_from_lookup_dict(lookups):
                 # See django.db.fields.BooleanField.get_prep_lookup
                 v = ('0', '1')[v]
             else:
-                v = unicode(v)
+                v = six.text_type(v)
             items.append((k, v))
         params.update(dict(items))
     return params
@@ -146,7 +147,7 @@ class ForeignKeyRawIdWidget(forms.TextInput):
             # The related object is registered with the same AdminSite
             related_url = reverse('admin:%s_%s_changelist' %
                                     (rel_to._meta.app_label,
-                                    rel_to._meta.module_name),
+                                    rel_to._meta.model_name),
                                     current_app=self.admin_site.name)
 
             params = self.url_parameters()
@@ -196,7 +197,7 @@ class ManyToManyRawIdWidget(ForeignKeyRawIdWidget):
             # The related object is registered with the same AdminSite
             attrs['class'] = 'vManyToManyRawIdAdminField'
         if value:
-            value = ','.join([force_unicode(v) for v in value])
+            value = ','.join([force_text(v) for v in value])
         else:
             value = ''
         return super(ManyToManyRawIdWidget, self).render(name, value, attrs)
@@ -212,17 +213,6 @@ class ManyToManyRawIdWidget(ForeignKeyRawIdWidget):
         if value:
             return value.split(',')
 
-    def _has_changed(self, initial, data):
-        if initial is None:
-            initial = []
-        if data is None:
-            data = []
-        if len(initial) != len(data):
-            return True
-        for pk1, pk2 in zip(initial, data):
-            if force_unicode(pk1) != force_unicode(pk2):
-                return True
-        return False
 
 class RelatedFieldWidgetWrapper(forms.Widget):
     """
@@ -257,7 +247,7 @@ class RelatedFieldWidgetWrapper(forms.Widget):
 
     def render(self, name, value, *args, **kwargs):
         rel_to = self.rel.to
-        info = (rel_to._meta.app_label, rel_to._meta.object_name.lower())
+        info = (rel_to._meta.app_label, rel_to._meta.model_name)
         self.widget.choices = self.choices
         output = [self.widget.render(name, value, *args, **kwargs)]
         if self.can_add_related:
@@ -277,9 +267,6 @@ class RelatedFieldWidgetWrapper(forms.Widget):
 
     def value_from_datadict(self, data, files, name):
         return self.widget.value_from_datadict(data, files, name)
-
-    def _has_changed(self, initial, data):
-        return self.widget._has_changed(initial, data)
 
     def id_for_label(self, id_):
         return self.widget.id_for_label(id_)
@@ -304,6 +291,19 @@ class AdminURLFieldWidget(forms.TextInput):
         if attrs is not None:
             final_attrs.update(attrs)
         super(AdminURLFieldWidget, self).__init__(attrs=final_attrs)
+
+    def render(self, name, value, attrs=None):
+        html = super(AdminURLFieldWidget, self).render(name, value, attrs)
+        if value:
+            value = force_text(self._format_value(value))
+            final_attrs = {'href': mark_safe(smart_urlquote(value))}
+            html = format_html(
+                '<p class="url">{0} <a {1}>{2}</a><br />{3} {4}</p>',
+                _('Currently:'), flatatt(final_attrs), value,
+                _('Change:'), html
+            )
+        return html
+
 
 class AdminIntegerFieldWidget(forms.TextInput):
     class_name = 'vIntegerField'

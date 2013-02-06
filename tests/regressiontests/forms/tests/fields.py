@@ -35,10 +35,13 @@ from decimal import Decimal
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.forms import *
 from django.test import SimpleTestCase
+from django.utils import formats
+from django.utils import six
+from django.utils._os import upath
 
 
 def fix_os_paths(x):
-    if isinstance(x, basestring):
+    if isinstance(x, six.string_types):
         return x.replace('\\', '/')
     elif isinstance(x, tuple):
         return tuple(fix_os_paths(list(x)))
@@ -49,6 +52,11 @@ def fix_os_paths(x):
 
 
 class FieldsTests(SimpleTestCase):
+
+    def assertWidgetRendersTo(self, field, to):
+        class _Form(Form):
+            f = field
+        self.assertHTMLEqual(str(_Form()['f']), to)
 
     def test_field_sets_widget_is_required(self):
         self.assertTrue(Field(required=True).widget.is_required)
@@ -355,6 +363,28 @@ class FieldsTests(SimpleTestCase):
         self.assertEqual(datetime.date(2006, 10, 25), f.clean(' 25 October 2006 '))
         self.assertRaisesMessage(ValidationError, "'Enter a valid date.'", f.clean, '   ')
 
+    def test_datefield_5(self):
+        # Test null bytes (#18982)
+        f = DateField()
+        self.assertRaisesMessage(ValidationError, "'Enter a valid date.'", f.clean, 'a\x00b')
+
+    def test_datefield_changed(self):
+        format = '%d/%m/%Y'
+        f = DateField(input_formats=[format])
+        d = datetime.date(2007, 9, 17)
+        self.assertFalse(f._has_changed(d, '17/09/2007'))
+        self.assertFalse(f._has_changed(d.strftime(format), '17/09/2007'))
+
+    def test_datefield_strptime(self):
+        """Test that field.strptime doesn't raise an UnicodeEncodeError (#16123)"""
+        f = DateField()
+        try:
+            f.strptime('31 мая 2011', '%d-%b-%y')
+        except Exception as e:
+            # assertIsInstance or assertRaises cannot be used because UnicodeEncodeError
+            # is a subclass of ValueError
+            self.assertEqual(e.__class__, ValueError)
+
     # TimeField ###################################################################
 
     def test_timefield_1(self):
@@ -380,6 +410,18 @@ class FieldsTests(SimpleTestCase):
         self.assertEqual(datetime.time(14, 25), f.clean(' 14:25 '))
         self.assertEqual(datetime.time(14, 25, 59), f.clean(' 14:25:59 '))
         self.assertRaisesMessage(ValidationError, "'Enter a valid time.'", f.clean, '   ')
+
+    def test_timefield_changed(self):
+        t1 = datetime.time(12, 51, 34, 482548)
+        t2 = datetime.time(12, 51)
+        format = '%H:%M'
+        f = TimeField(input_formats=[format])
+        self.assertTrue(f._has_changed(t1, '12:51'))
+        self.assertFalse(f._has_changed(t2, '12:51'))
+
+        format = '%I:%M %p'
+        f = TimeField(input_formats=[format])
+        self.assertFalse(f._has_changed(t2.strftime(format), '12:51 PM'))
 
     # DateTimeField ###############################################################
 
@@ -439,6 +481,15 @@ class FieldsTests(SimpleTestCase):
     def test_datetimefield_5(self):
         f = DateTimeField(input_formats=['%Y.%m.%d %H:%M:%S.%f'])
         self.assertEqual(datetime.datetime(2006, 10, 25, 14, 30, 45, 200), f.clean('2006.10.25 14:30:45.0002'))
+
+    def test_datetimefield_changed(self):
+        format = '%Y %m %d %I:%M %p'
+        f = DateTimeField(input_formats=[format])
+        d = datetime.datetime(2006, 9, 17, 14, 30, 0)
+        self.assertFalse(f._has_changed(d, '2006 09 17 2:30 PM'))
+        # Initial value may be a string from a hidden input
+        self.assertFalse(f._has_changed(d.strftime(format), '2006 09 17 2:30 PM'))
+
     # RegexField ##################################################################
 
     def test_regexfield_1(self):
@@ -474,7 +525,7 @@ class FieldsTests(SimpleTestCase):
     def test_regexfield_5(self):
         f = RegexField('^\d+$', min_length=5, max_length=10)
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at least 5 characters (it has 3).'", f.clean, '123')
-        self.assertRaisesRegexp(ValidationError, "'Ensure this value has at least 5 characters \(it has 3\)\.', u?'Enter a valid value\.'", f.clean, 'abc')
+        six.assertRaisesRegex(self, ValidationError, "'Ensure this value has at least 5 characters \(it has 3\)\.', u?'Enter a valid value\.'", f.clean, 'abc')
         self.assertEqual('12345', f.clean('12345'))
         self.assertEqual('1234567890', f.clean('1234567890'))
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at most 10 characters (it has 11).'", f.clean, '12345678901')
@@ -495,47 +546,36 @@ class FieldsTests(SimpleTestCase):
         self.assertRaisesMessage(ValidationError, "'Enter a valid value.'", f.clean, 'abcd')
 
     # EmailField ##################################################################
+    # See also modeltests/validators tests for validate_email specific tests
 
     def test_emailfield_1(self):
         f = EmailField()
+        self.assertWidgetRendersTo(f, '<input type="email" name="f" id="id_f" />')
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, '')
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, None)
         self.assertEqual('person@example.com', f.clean('person@example.com'))
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'foo')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'foo@')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'foo@bar')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'example@invalid-.com')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'example@-invalid.com')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'example@inv-.alid-.com')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'example@inv-.-alid.com')
-        self.assertEqual('example@valid-----hyphens.com', f.clean('example@valid-----hyphens.com'))
-        self.assertEqual('example@valid-with-hyphens.com', f.clean('example@valid-with-hyphens.com'))
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'example@.com')
-        self.assertEqual('local@domain.with.idn.xyz\xe4\xf6\xfc\xdfabc.part.com', f.clean('local@domain.with.idn.xyzäöüßabc.part.com'))
+        self.assertRaisesMessage(ValidationError, "'Enter a valid email address.'", f.clean, 'foo')
+        self.assertEqual('local@domain.with.idn.xyz\xe4\xf6\xfc\xdfabc.part.com',
+            f.clean('local@domain.with.idn.xyzäöüßabc.part.com'))
 
     def test_email_regexp_for_performance(self):
         f = EmailField()
         # Check for runaway regex security problem. This will take for-freeking-ever
         # if the security fix isn't in place.
-        self.assertRaisesMessage(
-                ValidationError,
-                "'Enter a valid e-mail address.'",
-                f.clean,
-                'viewx3dtextx26qx3d@yahoo.comx26latlngx3d15854521645943074058'
-            )
+        addr = 'viewx3dtextx26qx3d@yahoo.comx26latlngx3d15854521645943074058'
+        self.assertEqual(addr, f.clean(addr))
 
-    def test_emailfield_2(self):
+    def test_emailfield_not_required(self):
         f = EmailField(required=False)
         self.assertEqual('', f.clean(''))
         self.assertEqual('', f.clean(None))
         self.assertEqual('person@example.com', f.clean('person@example.com'))
         self.assertEqual('example@example.com', f.clean('      example@example.com  \t   \t '))
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'foo')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'foo@')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'foo@bar')
+        self.assertRaisesMessage(ValidationError, "'Enter a valid email address.'", f.clean, 'foo')
 
-    def test_emailfield_3(self):
+    def test_emailfield_min_max_length(self):
         f = EmailField(min_length=10, max_length=15)
+        self.assertWidgetRendersTo(f, '<input id="id_f" type="email" name="f" maxlength="15" />')
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at least 10 characters (it has 9).'", f.clean, 'a@foo.com')
         self.assertEqual('alf@foo.com', f.clean('alf@foo.com'))
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at most 15 characters (it has 20).'", f.clean, 'alf123456788@foo.com')
@@ -572,10 +612,34 @@ class FieldsTests(SimpleTestCase):
         self.assertEqual(SimpleUploadedFile,
                          type(f.clean(SimpleUploadedFile('name', b''))))
 
+    def test_filefield_changed(self):
+        '''
+        Test for the behavior of _has_changed for FileField. The value of data will
+        more than likely come from request.FILES. The value of initial data will
+        likely be a filename stored in the database. Since its value is of no use to
+        a FileField it is ignored.
+        '''
+        f = FileField()
+
+        # No file was uploaded and no initial data.
+        self.assertFalse(f._has_changed('', None))
+
+        # A file was uploaded and no initial data.
+        self.assertTrue(f._has_changed('', {'filename': 'resume.txt', 'content': 'My resume'}))
+
+        # A file was not uploaded, but there is initial data
+        self.assertFalse(f._has_changed('resume.txt', None))
+
+        # A file was uploaded and there is initial data (file identity is not dealt
+        # with here)
+        self.assertTrue(f._has_changed('resume.txt', {'filename': 'resume.txt', 'content': 'My resume'}))
+
+
     # URLField ##################################################################
 
     def test_urlfield_1(self):
         f = URLField()
+        self.assertWidgetRendersTo(f, '<input type="url" name="f" id="id_f" />')
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, '')
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, None)
         self.assertEqual('http://localhost/', f.clean('http://localhost'))
@@ -627,6 +691,7 @@ class FieldsTests(SimpleTestCase):
 
     def test_urlfield_5(self):
         f = URLField(min_length=15, max_length=20)
+        self.assertWidgetRendersTo(f, '<input id="id_f" type="url" name="f" maxlength="20" />')
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at least 15 characters (it has 13).'", f.clean, 'http://f.com')
         self.assertEqual('http://example.com/', f.clean('http://example.com'))
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at most 20 characters (it has 38).'", f.clean, 'http://abcdefghijklmnopqrstuvwxyz.com')
@@ -667,6 +732,18 @@ class FieldsTests(SimpleTestCase):
             # Valid IDN
             self.assertEqual(url, f.clean(url))
 
+    def test_urlfield_10(self):
+        """Test URLField correctly validates IPv6 (#18779)."""
+        f = URLField()
+        urls = (
+            'http://::/',
+            'http://6:21b4:92/',
+            'http://[12:34:3a53]/',
+            'http://[a34:9238::]:8080/',
+        )
+        for url in urls:
+            self.assertEqual(url, f.clean(url))
+
     def test_urlfield_not_string(self):
         f = URLField(required=False)
         self.assertRaisesMessage(ValidationError, "'Enter a valid URL.'", f.clean, 23)
@@ -702,6 +779,18 @@ class FieldsTests(SimpleTestCase):
 
     def test_boolean_picklable(self):
         self.assertIsInstance(pickle.loads(pickle.dumps(BooleanField())), BooleanField)
+
+    def test_booleanfield_changed(self):
+        f = BooleanField()
+        self.assertFalse(f._has_changed(None, None))
+        self.assertFalse(f._has_changed(None, ''))
+        self.assertFalse(f._has_changed('', None))
+        self.assertFalse(f._has_changed('', ''))
+        self.assertTrue(f._has_changed(False, 'on'))
+        self.assertFalse(f._has_changed(True, 'on'))
+        self.assertTrue(f._has_changed(True, ''))
+        # Initial value may have mutated to a string due to show_hidden_initial (#19537)
+        self.assertTrue(f._has_changed('False', 'on'))
 
     # ChoiceField #################################################################
 
@@ -819,6 +908,16 @@ class FieldsTests(SimpleTestCase):
         self.assertEqual(False, f.cleaned_data['nullbool1'])
         self.assertEqual(None, f.cleaned_data['nullbool2'])
 
+    def test_nullbooleanfield_changed(self):
+        f = NullBooleanField()
+        self.assertTrue(f._has_changed(False, None))
+        self.assertTrue(f._has_changed(None, False))
+        self.assertFalse(f._has_changed(None, None))
+        self.assertFalse(f._has_changed(False, False))
+        self.assertTrue(f._has_changed(True, False))
+        self.assertTrue(f._has_changed(True, None))
+        self.assertTrue(f._has_changed(True, False))
+
     # MultipleChoiceField #########################################################
 
     def test_multiplechoicefield_1(self):
@@ -859,6 +958,16 @@ class FieldsTests(SimpleTestCase):
         self.assertEqual(['1', '5'], f.clean(['1', '5']))
         self.assertRaisesMessage(ValidationError, "'Select a valid choice. 6 is not one of the available choices.'", f.clean, ['6'])
         self.assertRaisesMessage(ValidationError, "'Select a valid choice. 6 is not one of the available choices.'", f.clean, ['1','6'])
+
+    def test_multiplechoicefield_changed(self):
+        f = MultipleChoiceField(choices=[('1', 'One'), ('2', 'Two'), ('3', 'Three')])
+        self.assertFalse(f._has_changed(None, None))
+        self.assertFalse(f._has_changed([], None))
+        self.assertTrue(f._has_changed(None, ['1']))
+        self.assertFalse(f._has_changed([1, 2], ['1', '2']))
+        self.assertFalse(f._has_changed([2, 1], ['1', '2']))
+        self.assertTrue(f._has_changed([1, 2], ['1']))
+        self.assertTrue(f._has_changed([1, 2], ['1', '3']))
 
     # TypedMultipleChoiceField ############################################################
     # TypedMultipleChoiceField is just like MultipleChoiceField, except that coerced types
@@ -908,7 +1017,7 @@ class FieldsTests(SimpleTestCase):
         f = ComboField(fields=[CharField(max_length=20), EmailField()])
         self.assertEqual('test@example.com', f.clean('test@example.com'))
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at most 20 characters (it has 28).'", f.clean, 'longemailaddress@example.com')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'not an e-mail')
+        self.assertRaisesMessage(ValidationError, "'Enter a valid email address.'", f.clean, 'not an email')
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, '')
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, None)
 
@@ -916,19 +1025,19 @@ class FieldsTests(SimpleTestCase):
         f = ComboField(fields=[CharField(max_length=20), EmailField()], required=False)
         self.assertEqual('test@example.com', f.clean('test@example.com'))
         self.assertRaisesMessage(ValidationError, "'Ensure this value has at most 20 characters (it has 28).'", f.clean, 'longemailaddress@example.com')
-        self.assertRaisesMessage(ValidationError, "'Enter a valid e-mail address.'", f.clean, 'not an e-mail')
+        self.assertRaisesMessage(ValidationError, "'Enter a valid email address.'", f.clean, 'not an email')
         self.assertEqual('', f.clean(''))
         self.assertEqual('', f.clean(None))
 
     # FilePathField ###############################################################
 
     def test_filepathfield_1(self):
-        path = os.path.abspath(forms.__file__)
+        path = os.path.abspath(upath(forms.__file__))
         path = os.path.dirname(path) + '/'
         self.assertTrue(fix_os_paths(path).endswith('/django/forms/'))
 
     def test_filepathfield_2(self):
-        path = forms.__file__
+        path = upath(forms.__file__)
         path = os.path.dirname(os.path.abspath(path)) + '/'
         f = FilePathField(path=path)
         f.choices = [p for p in f.choices if p[0].endswith('.py')]
@@ -949,7 +1058,7 @@ class FieldsTests(SimpleTestCase):
         assert fix_os_paths(f.clean(path + 'fields.py')).endswith('/django/forms/fields.py')
 
     def test_filepathfield_3(self):
-        path = forms.__file__
+        path = upath(forms.__file__)
         path = os.path.dirname(os.path.abspath(path)) + '/'
         f = FilePathField(path=path, match='^.*?\.py$')
         f.choices.sort()
@@ -967,7 +1076,7 @@ class FieldsTests(SimpleTestCase):
             self.assertTrue(got[0].endswith(exp[0]))
 
     def test_filepathfield_4(self):
-        path = os.path.abspath(forms.__file__)
+        path = os.path.abspath(upath(forms.__file__))
         path = os.path.dirname(path) + '/'
         f = FilePathField(path=path, recursive=True, match='^.*?\.py$')
         f.choices.sort()
@@ -987,7 +1096,7 @@ class FieldsTests(SimpleTestCase):
             self.assertTrue(got[0].endswith(exp[0]))
 
     def test_filepathfield_folders(self):
-        path = os.path.dirname(__file__) + '/filepath_test_files/'
+        path = os.path.dirname(upath(__file__)) + '/filepath_test_files/'
         f = FilePathField(path=path, allow_folders=True, allow_files=False)
         f.choices.sort()
         expected = [
@@ -1023,7 +1132,7 @@ class FieldsTests(SimpleTestCase):
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, None)
         self.assertRaisesMessage(ValidationError, "'This field is required.'", f.clean, '')
         self.assertRaisesMessage(ValidationError, "'Enter a list of values.'", f.clean, 'hello')
-        self.assertRaisesRegexp(ValidationError, "'Enter a valid date\.', u?'Enter a valid time\.'", f.clean, ['hello', 'there'])
+        six.assertRaisesRegex(self, ValidationError, "'Enter a valid date\.', u?'Enter a valid time\.'", f.clean, ['hello', 'there'])
         self.assertRaisesMessage(ValidationError, "'Enter a valid time.'", f.clean, ['2006-01-10', 'there'])
         self.assertRaisesMessage(ValidationError, "'Enter a valid date.'", f.clean, ['hello', '07:30'])
 
@@ -1036,9 +1145,15 @@ class FieldsTests(SimpleTestCase):
         self.assertEqual(None, f.clean(['']))
         self.assertEqual(None, f.clean(['', '']))
         self.assertRaisesMessage(ValidationError, "'Enter a list of values.'", f.clean, 'hello')
-        self.assertRaisesRegexp(ValidationError, "'Enter a valid date\.', u?'Enter a valid time\.'", f.clean, ['hello', 'there'])
+        six.assertRaisesRegex(self, ValidationError, "'Enter a valid date\.', u?'Enter a valid time\.'", f.clean, ['hello', 'there'])
         self.assertRaisesMessage(ValidationError, "'Enter a valid time.'", f.clean, ['2006-01-10', 'there'])
         self.assertRaisesMessage(ValidationError, "'Enter a valid date.'", f.clean, ['hello', '07:30'])
         self.assertRaisesMessage(ValidationError, "'Enter a valid time.'", f.clean, ['2006-01-10', ''])
         self.assertRaisesMessage(ValidationError, "'Enter a valid time.'", f.clean, ['2006-01-10'])
         self.assertRaisesMessage(ValidationError, "'Enter a valid date.'", f.clean, ['', '07:30'])
+
+    def test_splitdatetimefield_changed(self):
+        f = SplitDateTimeField(input_date_formats=['%d/%m/%Y'])
+        self.assertTrue(f._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['2008-05-06', '12:40:00']))
+        self.assertFalse(f._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['06/05/2008', '12:40']))
+        self.assertTrue(f._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['06/05/2008', '12:41']))

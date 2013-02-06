@@ -7,21 +7,23 @@ This is a simple server for use in testing or debugging Django apps. It hasn't
 been reviewed for security issues. DON'T USE IT FOR PRODUCTION USE!
 """
 
+from __future__ import unicode_literals
+
 import os
 import socket
 import sys
 import traceback
-import urllib
-import urlparse
-from SocketServer import ThreadingMixIn
+try:
+    from urllib.parse import urljoin
+except ImportError:     # Python 2
+    from urlparse import urljoin
+from django.utils.six.moves import socketserver
 from wsgiref import simple_server
 from wsgiref.util import FileWrapper   # for backwards compatibility
 
-import django
-from django.core.exceptions import ImproperlyConfigured
 from django.core.management.color import color_style
 from django.core.wsgi import get_wsgi_application
-from django.utils.importlib import import_module
+from django.utils.module_loading import import_by_path
 
 __all__ = ['WSGIServer', 'WSGIRequestHandler']
 
@@ -45,22 +47,11 @@ def get_internal_wsgi_application():
     app_path = getattr(settings, 'WSGI_APPLICATION')
     if app_path is None:
         return get_wsgi_application()
-    module_name, attr = app_path.rsplit('.', 1)
-    try:
-        mod = import_module(module_name)
-    except ImportError as e:
-        raise ImproperlyConfigured(
-            "WSGI application '%s' could not be loaded; "
-            "could not import module '%s': %s" % (app_path, module_name, e))
-    try:
-        app = getattr(mod, attr)
-    except AttributeError as e:
-        raise ImproperlyConfigured(
-            "WSGI application '%s' could not be loaded; "
-            "can't find '%s' in module '%s': %s"
-            % (app_path, attr, module_name, e))
 
-    return app
+    return import_by_path(
+        app_path,
+        error_prefix="WSGI application '%s' could not be loaded; " % app_path
+    )
 
 
 class WSGIServerException(Exception):
@@ -68,12 +59,12 @@ class WSGIServerException(Exception):
 
 
 class ServerHandler(simple_server.ServerHandler, object):
-    error_status = "500 INTERNAL SERVER ERROR"
+    error_status = str("500 INTERNAL SERVER ERROR")
 
     def write(self, data):
-        """'write()' callable as specified by PEP 333"""
+        """'write()' callable as specified by PEP 3333"""
 
-        assert isinstance(data, str), "write() argument must be string"
+        assert isinstance(data, bytes), "write() argument must be bytestring"
 
         if not self.status:
             raise AssertionError("write() before start_response()")
@@ -105,6 +96,17 @@ class ServerHandler(simple_server.ServerHandler, object):
         super(ServerHandler, self).error_output(environ, start_response)
         return ['\n'.join(traceback.format_exception(*sys.exc_info()))]
 
+    # Backport of http://hg.python.org/cpython/rev/d5af1b235dab. See #16241.
+    # This can be removed when support for Python <= 2.7.3 is deprecated.
+    def finish_response(self):
+        try:
+            if not self.result_is_file() or not self.sendfile():
+                for data in self.result:
+                    self.write(data)
+                self.finish_content()
+        finally:
+            self.close()
+
 
 class WSGIServer(simple_server.WSGIServer, object):
     """BaseHTTPServer that implements the Python WSGI protocol"""
@@ -127,43 +129,16 @@ class WSGIRequestHandler(simple_server.WSGIRequestHandler, object):
 
     def __init__(self, *args, **kwargs):
         from django.conf import settings
-        self.admin_static_prefix = urlparse.urljoin(settings.STATIC_URL, 'admin/')
+        self.admin_static_prefix = urljoin(settings.STATIC_URL, 'admin/')
         # We set self.path to avoid crashes in log_message() on unsupported
         # requests (like "OPTIONS").
         self.path = ''
         self.style = color_style()
         super(WSGIRequestHandler, self).__init__(*args, **kwargs)
 
-    def get_environ(self):
-        env = self.server.base_environ.copy()
-        env['SERVER_PROTOCOL'] = self.request_version
-        env['REQUEST_METHOD'] = self.command
-        if '?' in self.path:
-            path,query = self.path.split('?',1)
-        else:
-            path,query = self.path,''
-
-        env['PATH_INFO'] = urllib.unquote(path)
-        env['QUERY_STRING'] = query
-        env['REMOTE_ADDR'] = self.client_address[0]
-        env['CONTENT_TYPE'] = self.headers.get('content-type', 'text/plain')
-
-        length = self.headers.get('content-length')
-        if length:
-            env['CONTENT_LENGTH'] = length
-
-        for key, value in self.headers.items():
-            key = key.replace('-','_').upper()
-            value = value.strip()
-            if key in env:
-                # Skip content length, type, etc.
-                continue
-            if 'HTTP_' + key in env:
-                # Comma-separate multiple headers
-                env['HTTP_' + key] += ',' + value
-            else:
-                env['HTTP_' + key] = value
-        return env
+    def address_string(self):
+        # Short-circuit parent method to not call socket.getfqdn
+        return self.client_address[0]
 
     def log_message(self, format, *args):
         # Don't bother logging requests for admin images or the favicon.
@@ -197,7 +172,7 @@ class WSGIRequestHandler(simple_server.WSGIRequestHandler, object):
 def run(addr, port, wsgi_handler, ipv6=False, threading=False):
     server_address = (addr, port)
     if threading:
-        httpd_cls = type('WSGIServer', (ThreadingMixIn, WSGIServer), {})
+        httpd_cls = type(str('WSGIServer'), (socketserver.ThreadingMixIn, WSGIServer), {})
     else:
         httpd_cls = WSGIServer
     httpd = httpd_cls(server_address, WSGIRequestHandler, ipv6=ipv6)

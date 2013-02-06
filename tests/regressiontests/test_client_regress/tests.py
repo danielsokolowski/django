@@ -16,11 +16,13 @@ from django.test import Client, TestCase
 from django.test.client import encode_file, RequestFactory
 from django.test.utils import ContextList, override_settings, str_prefix
 from django.template.response import SimpleTemplateResponse
+from django.utils._os import upath
+from django.utils.translation import ugettext_lazy
 from django.http import HttpResponse
 
 
 @override_settings(
-    TEMPLATE_DIRS=(os.path.join(os.path.dirname(__file__), 'templates'),)
+    TEMPLATE_DIRS=(os.path.join(os.path.dirname(upath(__file__)), 'templates'),)
 )
 class AssertContainsTests(TestCase):
     def test_contains(self):
@@ -128,6 +130,14 @@ class AssertContainsTests(TestCase):
         r = self.client.get('/test_client_regress/check_unicode/')
         self.assertNotContains(r, 'はたけ')
         self.assertNotContains(r, b'\xe3\x81\xaf\xe3\x81\x9f\xe3\x81\x91'.decode('utf-8'))
+
+    def test_nontext_contains(self):
+        r = self.client.get('/test_client_regress/no_template_view/')
+        self.assertContains(r, ugettext_lazy('once'))
+
+    def test_nontext_not_contains(self):
+        r = self.client.get('/test_client_regress/no_template_view/')
+        self.assertNotContains(r, ugettext_lazy('never'))
 
     def test_assert_contains_renders_template_response(self):
         """ Test that we can pass in an unrendered SimpleTemplateReponse
@@ -490,11 +500,11 @@ class AssertFormErrorTests(TestCase):
         try:
             self.assertFormError(response, 'form', 'email', 'Some error.')
         except AssertionError as e:
-            self.assertIn(str_prefix("The field 'email' on form 'form' in context 0 does not contain the error 'Some error.' (actual errors: [%(_)s'Enter a valid e-mail address.'])"), str(e))
+            self.assertIn(str_prefix("The field 'email' on form 'form' in context 0 does not contain the error 'Some error.' (actual errors: [%(_)s'Enter a valid email address.'])"), str(e))
         try:
             self.assertFormError(response, 'form', 'email', 'Some error.', msg_prefix='abc')
         except AssertionError as e:
-            self.assertIn(str_prefix("abc: The field 'email' on form 'form' in context 0 does not contain the error 'Some error.' (actual errors: [%(_)s'Enter a valid e-mail address.'])"), str(e))
+            self.assertIn(str_prefix("abc: The field 'email' on form 'form' in context 0 does not contain the error 'Some error.' (actual errors: [%(_)s'Enter a valid email address.'])"), str(e))
 
     def test_unknown_nonfield_error(self):
         """
@@ -619,17 +629,8 @@ class TemplateExceptionTests(TestCase):
                 if hasattr(template_loader, 'reset'):
                     template_loader.reset()
 
-    @override_settings(TEMPLATE_DIRS=(),)
-    def test_no_404_template(self):
-        "Missing templates are correctly reported by test client"
-        try:
-            response = self.client.get("/no_such_view/")
-            self.fail("Should get error about missing template")
-        except TemplateDoesNotExist:
-            pass
-
     @override_settings(
-        TEMPLATE_DIRS=(os.path.join(os.path.dirname(__file__), 'bad_templates'),)
+        TEMPLATE_DIRS=(os.path.join(os.path.dirname(upath(__file__)), 'bad_templates'),)
     )
     def test_bad_404_template(self):
         "Errors found when rendering 404 error templates are re-raised"
@@ -782,6 +783,13 @@ class RequestMethodTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b'request method: DELETE')
 
+    def test_patch(self):
+        "Request a view via request method PATCH"
+        response = self.client.patch('/test_client_regress/request_methods/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'request method: PATCH')
+
+
 class RequestMethodStringDataTests(TestCase):
     def test_post(self):
         "Request a view with string data via request method POST"
@@ -798,6 +806,14 @@ class RequestMethodStringDataTests(TestCase):
         response = self.client.put('/test_client_regress/request_methods/', data=data, content_type='application/json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b'request method: PUT')
+
+    def test_patch(self):
+        "Request a view with string data via request method PATCH"
+        # Regression test for #17797
+        data = '{"test": "json"}'
+        response = self.client.patch('/test_client_regress/request_methods/', data=data, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'request method: PATCH')
 
 class QueryStringTests(TestCase):
     def test_get_like_requests(self):
@@ -858,7 +874,7 @@ class UnicodePayloadTests(TestCase):
         json = '{"english": "mountain pass"}'
         response = self.client.post("/test_client_regress/parse_unicode_json/", json,
                                     content_type="application/json")
-        self.assertEqual(response.content, json)
+        self.assertEqual(response.content, json.encode())
 
     def test_unicode_payload_utf8(self):
         "A non-ASCII unicode data encoded as UTF-8 can be POSTed"
@@ -888,7 +904,7 @@ class DummyFile(object):
     def __init__(self, filename):
         self.name = filename
     def read(self):
-        return 'TEST_FILE_CONTENT'
+        return b'TEST_FILE_CONTENT'
 
 class UploadedFileEncodingTest(TestCase):
     def test_file_encoding(self):

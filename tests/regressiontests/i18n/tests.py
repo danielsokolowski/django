@@ -18,21 +18,30 @@ from django.utils.formats import (get_format, date_format, time_format,
     number_format)
 from django.utils.importlib import import_module
 from django.utils.numberformat import format as nformat
-from django.utils.safestring import mark_safe, SafeString, SafeUnicode
-from django.utils.translation import (ugettext, ugettext_lazy, activate,
-    deactivate, gettext_lazy, pgettext, npgettext, to_locale,
-    get_language_info, get_language, get_language_from_request)
-
+from django.utils._os import upath
+from django.utils.safestring import mark_safe, SafeBytes, SafeString, SafeText
+from django.utils import six
+from django.utils.six import PY3
+from django.utils.translation import (activate, deactivate,
+    get_language,  get_language_from_request, get_language_info,
+    to_locale, trans_real,
+    gettext, gettext_lazy,
+    ugettext, ugettext_lazy,
+    ngettext, ngettext_lazy,
+    ungettext, ungettext_lazy,
+    pgettext, pgettext_lazy,
+    npgettext, npgettext_lazy)
 
 from .commands.tests import can_run_extraction_tests, can_run_compilation_tests
 if can_run_extraction_tests:
     from .commands.extraction import (ExtractorTests, BasicExtractorTests,
         JavascriptExtractorTests, IgnoredExtractorTests, SymlinkExtractorTests,
         CopyPluralFormsExtractorTests, NoWrapExtractorTests,
-        NoLocationExtractorTests)
+        NoLocationExtractorTests, KeepPotFileExtractorTests,
+        MultipleLocaleExtractionTests)
 if can_run_compilation_tests:
     from .commands.compilation import (PoFileTests, PoFileContentsTests,
-        PercentRenderingTests)
+        PercentRenderingTests, MultipleLocaleCompilationTests)
 from .contenttypes.tests import ContentTypeTests
 from .forms import I18nForm, SelectDateForm, SelectDateWidget, CompanyForm
 from .models import Company, TestModel
@@ -42,7 +51,10 @@ from .patterns.tests import (URLRedirectWithoutTrailingSlashTests,
     URLPrefixTests, URLResponseTests, URLRedirectTests, PathUnusedTests)
 
 
-here = os.path.dirname(os.path.abspath(__file__))
+here = os.path.dirname(os.path.abspath(upath(__file__)))
+extended_locale_paths = settings.LOCALE_PATHS + (
+    os.path.join(here, 'other', 'locale'),
+)
 
 class TranslationTests(TestCase):
 
@@ -78,164 +90,197 @@ class TranslationTests(TestCase):
         s4 = ugettext_lazy('Some other string')
         self.assertEqual(False, s == s4)
 
+        if not six.PY3:
+            # On Python 2, gettext_lazy should not transform a bytestring to unicode
+            self.assertEqual(gettext_lazy(b"test").upper(), b"TEST")
+
     def test_lazy_pickle(self):
         s1 = ugettext_lazy("test")
-        self.assertEqual(unicode(s1), "test")
+        self.assertEqual(six.text_type(s1), "test")
         s2 = pickle.loads(pickle.dumps(s1))
-        self.assertEqual(unicode(s2), "test")
+        self.assertEqual(six.text_type(s2), "test")
 
+    @override_settings(LOCALE_PATHS=extended_locale_paths)
+    def test_ungettext_lazy(self):
+        simple_with_format = ungettext_lazy('%d good result', '%d good results')
+        simple_str_with_format = ngettext_lazy(str('%d good result'), str('%d good results'))
+        simple_context_with_format = npgettext_lazy('Exclamation', '%d good result', '%d good results')
+        simple_without_format = ungettext_lazy('good result', 'good results')
+        with translation.override('de'):
+            self.assertEqual(simple_with_format % 1, '1 gutes Resultat')
+            self.assertEqual(simple_with_format % 4, '4 guten Resultate')
+            self.assertEqual(simple_str_with_format % 1, str('1 gutes Resultat'))
+            self.assertEqual(simple_str_with_format % 4, str('4 guten Resultate'))
+            self.assertEqual(simple_context_with_format % 1, '1 gutes Resultat!')
+            self.assertEqual(simple_context_with_format % 4, '4 guten Resultate!')
+            self.assertEqual(simple_without_format % 1, 'gutes Resultat')
+            self.assertEqual(simple_without_format % 4, 'guten Resultate')
+
+        complex_nonlazy = ungettext_lazy('Hi %(name)s, %(num)d good result', 'Hi %(name)s, %(num)d good results', 4)
+        complex_deferred = ungettext_lazy('Hi %(name)s, %(num)d good result', 'Hi %(name)s, %(num)d good results', 'num')
+        complex_str_nonlazy = ngettext_lazy(str('Hi %(name)s, %(num)d good result'), str('Hi %(name)s, %(num)d good results'), 4)
+        complex_str_deferred = ngettext_lazy(str('Hi %(name)s, %(num)d good result'), str('Hi %(name)s, %(num)d good results'), 'num')
+        complex_context_nonlazy = npgettext_lazy('Greeting', 'Hi %(name)s, %(num)d good result', 'Hi %(name)s, %(num)d good results', 4)
+        complex_context_deferred = npgettext_lazy('Greeting', 'Hi %(name)s, %(num)d good result', 'Hi %(name)s, %(num)d good results', 'num')
+        with translation.override('de'):
+            self.assertEqual(complex_nonlazy % {'num': 4, 'name': 'Jim'}, 'Hallo Jim, 4 guten Resultate')
+            self.assertEqual(complex_deferred % {'name': 'Jim', 'num': 1}, 'Hallo Jim, 1 gutes Resultat')
+            self.assertEqual(complex_deferred % {'name': 'Jim', 'num': 5}, 'Hallo Jim, 5 guten Resultate')
+            with six.assertRaisesRegex(self, KeyError, 'Your dictionary lacks key.*'):
+                complex_deferred % {'name': 'Jim'}
+            self.assertEqual(complex_str_nonlazy % {'num': 4, 'name': 'Jim'}, str('Hallo Jim, 4 guten Resultate'))
+            self.assertEqual(complex_str_deferred % {'name': 'Jim', 'num': 1}, str('Hallo Jim, 1 gutes Resultat'))
+            self.assertEqual(complex_str_deferred % {'name': 'Jim', 'num': 5}, str('Hallo Jim, 5 guten Resultate'))
+            with six.assertRaisesRegex(self, KeyError, 'Your dictionary lacks key.*'):
+                complex_str_deferred % {'name': 'Jim'}
+            self.assertEqual(complex_context_nonlazy % {'num': 4, 'name': 'Jim'}, 'Willkommen Jim, 4 guten Resultate')
+            self.assertEqual(complex_context_deferred % {'name': 'Jim', 'num': 1}, 'Willkommen Jim, 1 gutes Resultat')
+            self.assertEqual(complex_context_deferred % {'name': 'Jim', 'num': 5}, 'Willkommen Jim, 5 guten Resultate')
+            with six.assertRaisesRegex(self, KeyError, 'Your dictionary lacks key.*'):
+                complex_context_deferred % {'name': 'Jim'}
+
+    @override_settings(LOCALE_PATHS=extended_locale_paths)
     def test_pgettext(self):
-        # Reset translation catalog to include other/locale/de
-        extended_locale_paths = settings.LOCALE_PATHS + (
-            os.path.join(here, 'other', 'locale'),
-        )
-        with self.settings(LOCALE_PATHS=extended_locale_paths):
-            from django.utils.translation import trans_real
-            trans_real._active = local()
-            trans_real._translations = {}
-            with translation.override('de'):
-                self.assertEqual(pgettext("unexisting", "May"), "May")
-                self.assertEqual(pgettext("month name", "May"), "Mai")
-                self.assertEqual(pgettext("verb", "May"), "Kann")
-                self.assertEqual(npgettext("search", "%d result", "%d results", 4) % 4, "4 Resultate")
+        trans_real._active = local()
+        trans_real._translations = {}
+        with translation.override('de'):
+            self.assertEqual(pgettext("unexisting", "May"), "May")
+            self.assertEqual(pgettext("month name", "May"), "Mai")
+            self.assertEqual(pgettext("verb", "May"), "Kann")
+            self.assertEqual(npgettext("search", "%d result", "%d results", 4) % 4, "4 Resultate")
 
+    @override_settings(LOCALE_PATHS=extended_locale_paths)
     def test_template_tags_pgettext(self):
         """
         Ensure that message contexts are taken into account the {% trans %} and
         {% blocktrans %} template tags.
         Refs #14806.
         """
-        # Reset translation catalog to include other/locale/de
-        extended_locale_paths = settings.LOCALE_PATHS + (
-            os.path.join(here, 'other', 'locale'),
-        )
-        with self.settings(LOCALE_PATHS=extended_locale_paths):
-            from django.utils.translation import trans_real
-            trans_real._active = local()
-            trans_real._translations = {}
-            with translation.override('de'):
+        trans_real._active = local()
+        trans_real._translations = {}
+        with translation.override('de'):
 
-                # {% trans %} -----------------------------------
+            # {% trans %} -----------------------------------
 
-                # Inexisting context...
-                t = Template('{% load i18n %}{% trans "May" context "unexisting" %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'May')
+            # Inexisting context...
+            t = Template('{% load i18n %}{% trans "May" context "unexisting" %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'May')
 
-                # Existing context...
-                # Using a literal
-                t = Template('{% load i18n %}{% trans "May" context "month name" %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Mai')
-                t = Template('{% load i18n %}{% trans "May" context "verb" %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Kann')
+            # Existing context...
+            # Using a literal
+            t = Template('{% load i18n %}{% trans "May" context "month name" %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Mai')
+            t = Template('{% load i18n %}{% trans "May" context "verb" %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Kann')
 
-                # Using a variable
-                t = Template('{% load i18n %}{% trans "May" context message_context %}')
-                rendered = t.render(Context({'message_context': 'month name'}))
-                self.assertEqual(rendered, 'Mai')
-                t = Template('{% load i18n %}{% trans "May" context message_context %}')
-                rendered = t.render(Context({'message_context': 'verb'}))
-                self.assertEqual(rendered, 'Kann')
+            # Using a variable
+            t = Template('{% load i18n %}{% trans "May" context message_context %}')
+            rendered = t.render(Context({'message_context': 'month name'}))
+            self.assertEqual(rendered, 'Mai')
+            t = Template('{% load i18n %}{% trans "May" context message_context %}')
+            rendered = t.render(Context({'message_context': 'verb'}))
+            self.assertEqual(rendered, 'Kann')
 
-                # Using a filter
-                t = Template('{% load i18n %}{% trans "May" context message_context|lower %}')
-                rendered = t.render(Context({'message_context': 'MONTH NAME'}))
-                self.assertEqual(rendered, 'Mai')
-                t = Template('{% load i18n %}{% trans "May" context message_context|lower %}')
-                rendered = t.render(Context({'message_context': 'VERB'}))
-                self.assertEqual(rendered, 'Kann')
+            # Using a filter
+            t = Template('{% load i18n %}{% trans "May" context message_context|lower %}')
+            rendered = t.render(Context({'message_context': 'MONTH NAME'}))
+            self.assertEqual(rendered, 'Mai')
+            t = Template('{% load i18n %}{% trans "May" context message_context|lower %}')
+            rendered = t.render(Context({'message_context': 'VERB'}))
+            self.assertEqual(rendered, 'Kann')
 
-                # Using 'as'
-                t = Template('{% load i18n %}{% trans "May" context "month name" as var %}Value: {{ var }}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Value: Mai')
-                t = Template('{% load i18n %}{% trans "May" as var context "verb" %}Value: {{ var }}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Value: Kann')
+            # Using 'as'
+            t = Template('{% load i18n %}{% trans "May" context "month name" as var %}Value: {{ var }}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Value: Mai')
+            t = Template('{% load i18n %}{% trans "May" as var context "verb" %}Value: {{ var }}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Value: Kann')
 
-                # Mis-uses
-                self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% trans "May" context as var %}{{ var }}')
-                self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% trans "May" as var context %}{{ var }}')
+            # Mis-uses
+            self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% trans "May" context as var %}{{ var }}')
+            self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% trans "May" as var context %}{{ var }}')
 
-                # {% blocktrans %} ------------------------------
+            # {% blocktrans %} ------------------------------
 
-                # Inexisting context...
-                t = Template('{% load i18n %}{% blocktrans context "unexisting" %}May{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'May')
+            # Inexisting context...
+            t = Template('{% load i18n %}{% blocktrans context "unexisting" %}May{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'May')
 
-                # Existing context...
-                # Using a literal
-                t = Template('{% load i18n %}{% blocktrans context "month name" %}May{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Mai')
-                t = Template('{% load i18n %}{% blocktrans context "verb" %}May{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Kann')
+            # Existing context...
+            # Using a literal
+            t = Template('{% load i18n %}{% blocktrans context "month name" %}May{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Mai')
+            t = Template('{% load i18n %}{% blocktrans context "verb" %}May{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Kann')
 
-                # Using a variable
-                t = Template('{% load i18n %}{% blocktrans context message_context %}May{% endblocktrans %}')
-                rendered = t.render(Context({'message_context': 'month name'}))
-                self.assertEqual(rendered, 'Mai')
-                t = Template('{% load i18n %}{% blocktrans context message_context %}May{% endblocktrans %}')
-                rendered = t.render(Context({'message_context': 'verb'}))
-                self.assertEqual(rendered, 'Kann')
+            # Using a variable
+            t = Template('{% load i18n %}{% blocktrans context message_context %}May{% endblocktrans %}')
+            rendered = t.render(Context({'message_context': 'month name'}))
+            self.assertEqual(rendered, 'Mai')
+            t = Template('{% load i18n %}{% blocktrans context message_context %}May{% endblocktrans %}')
+            rendered = t.render(Context({'message_context': 'verb'}))
+            self.assertEqual(rendered, 'Kann')
 
-                # Using a filter
-                t = Template('{% load i18n %}{% blocktrans context message_context|lower %}May{% endblocktrans %}')
-                rendered = t.render(Context({'message_context': 'MONTH NAME'}))
-                self.assertEqual(rendered, 'Mai')
-                t = Template('{% load i18n %}{% blocktrans context message_context|lower %}May{% endblocktrans %}')
-                rendered = t.render(Context({'message_context': 'VERB'}))
-                self.assertEqual(rendered, 'Kann')
+            # Using a filter
+            t = Template('{% load i18n %}{% blocktrans context message_context|lower %}May{% endblocktrans %}')
+            rendered = t.render(Context({'message_context': 'MONTH NAME'}))
+            self.assertEqual(rendered, 'Mai')
+            t = Template('{% load i18n %}{% blocktrans context message_context|lower %}May{% endblocktrans %}')
+            rendered = t.render(Context({'message_context': 'VERB'}))
+            self.assertEqual(rendered, 'Kann')
 
-                # Using 'count'
-                t = Template('{% load i18n %}{% blocktrans count number=1 context "super search" %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, '1 Super-Ergebnis')
-                t = Template('{% load i18n %}{% blocktrans count number=2 context "super search" %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, '2 Super-Ergebnisse')
-                t = Template('{% load i18n %}{% blocktrans context "other super search" count number=1 %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, '1 anderen Super-Ergebnis')
-                t = Template('{% load i18n %}{% blocktrans context "other super search" count number=2 %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, '2 andere Super-Ergebnisse')
+            # Using 'count'
+            t = Template('{% load i18n %}{% blocktrans count number=1 context "super search" %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, '1 Super-Ergebnis')
+            t = Template('{% load i18n %}{% blocktrans count number=2 context "super search" %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, '2 Super-Ergebnisse')
+            t = Template('{% load i18n %}{% blocktrans context "other super search" count number=1 %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, '1 anderen Super-Ergebnis')
+            t = Template('{% load i18n %}{% blocktrans context "other super search" count number=2 %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, '2 andere Super-Ergebnisse')
 
-                # Using 'with'
-                t = Template('{% load i18n %}{% blocktrans with num_comments=5 context "comment count" %}There are {{ num_comments }} comments{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Es gibt 5 Kommentare')
-                t = Template('{% load i18n %}{% blocktrans with num_comments=5 context "other comment count" %}There are {{ num_comments }} comments{% endblocktrans %}')
-                rendered = t.render(Context())
-                self.assertEqual(rendered, 'Andere: Es gibt 5 Kommentare')
+            # Using 'with'
+            t = Template('{% load i18n %}{% blocktrans with num_comments=5 context "comment count" %}There are {{ num_comments }} comments{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Es gibt 5 Kommentare')
+            t = Template('{% load i18n %}{% blocktrans with num_comments=5 context "other comment count" %}There are {{ num_comments }} comments{% endblocktrans %}')
+            rendered = t.render(Context())
+            self.assertEqual(rendered, 'Andere: Es gibt 5 Kommentare')
 
-                # Mis-uses
-                self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% blocktrans context with month="May" %}{{ month }}{% endblocktrans %}')
-                self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% blocktrans context %}{% endblocktrans %}')
-                self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% blocktrans count number=2 context %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
+            # Mis-uses
+            self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% blocktrans context with month="May" %}{{ month }}{% endblocktrans %}')
+            self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% blocktrans context %}{% endblocktrans %}')
+            self.assertRaises(TemplateSyntaxError, Template, '{% load i18n %}{% blocktrans count number=2 context %}{{ number }} super result{% plural %}{{ number }} super results{% endblocktrans %}')
 
 
     def test_string_concat(self):
         """
-        unicode(string_concat(...)) should not raise a TypeError - #4796
+        six.text_type(string_concat(...)) should not raise a TypeError - #4796
         """
         import django.utils.translation
-        self.assertEqual('django', unicode(django.utils.translation.string_concat("dja", "ngo")))
+        self.assertEqual('django', six.text_type(django.utils.translation.string_concat("dja", "ngo")))
 
     def test_safe_status(self):
         """
         Translating a string requiring no auto-escaping shouldn't change the "safe" status.
         """
-        s = mark_safe(b'Password')
+        s = mark_safe(str('Password'))
         self.assertEqual(SafeString, type(s))
         with translation.override('de', deactivate=True):
-            self.assertEqual(SafeUnicode, type(ugettext(s)))
-        self.assertEqual('aPassword', SafeString('a') + s)
-        self.assertEqual('Passworda', s + SafeString('a'))
+            self.assertEqual(SafeText, type(ugettext(s)))
+        self.assertEqual('aPassword', SafeText('a') + s)
+        self.assertEqual('Passworda', s + SafeText('a'))
         self.assertEqual('Passworda', s + mark_safe('a'))
         self.assertEqual('aPassword', mark_safe('a') + s)
         self.assertEqual('as', mark_safe('a') + mark_safe('s'))
@@ -245,8 +290,7 @@ class TranslationTests(TestCase):
         Translations on files with mac or dos end of lines will be converted
         to unix eof in .po catalogs, and they have to match when retrieved
         """
-        from django.utils.translation.trans_real import translation as Trans
-        ca_translation = Trans('ca')
+        ca_translation = trans_real.translation('ca')
         ca_translation._catalog['Mac\nEOF\n'] = 'Catalan Mac\nEOF\n'
         ca_translation._catalog['Win\nEOF\n'] = 'Catalan Win\nEOF\n'
         with translation.override('ca', deactivate=True):
@@ -265,9 +309,8 @@ class TranslationTests(TestCase):
         """
         Test the to_language function
         """
-        from django.utils.translation.trans_real import to_language
-        self.assertEqual(to_language('en_US'), 'en-us')
-        self.assertEqual(to_language('sr_Lat'), 'sr-lat')
+        self.assertEqual(trans_real.to_language('en_US'), 'en-us')
+        self.assertEqual(trans_real.to_language('sr_Lat'), 'sr-lat')
 
     @override_settings(LOCALE_PATHS=(os.path.join(here, 'other', 'locale'),))
     def test_bad_placeholder_1(self):
@@ -276,7 +319,6 @@ class TranslationTests(TestCase):
         (%(person)s is translated as %(personne)s in fr.po)
         Refs #16516.
         """
-        from django.template import Template, Context
         with translation.override('fr'):
             t = Template('{% load i18n %}{% blocktrans %}My name is {{ person }}.{% endblocktrans %}')
             rendered = t.render(Context({'person': 'James'}))
@@ -289,7 +331,6 @@ class TranslationTests(TestCase):
         (%(person) misses a 's' in fr.po, causing the string formatting to fail)
         Refs #18393.
         """
-        from django.template import Template, Context
         with translation.override('fr'):
             t = Template('{% load i18n %}{% blocktrans %}My other name is {{ person }}.{% endblocktrans %}')
             rendered = t.render(Context({'person': 'James'}))
@@ -309,7 +350,7 @@ class FormattingTests(TestCase):
         self.d = datetime.date(2009, 12, 31)
         self.dt = datetime.datetime(2009, 12, 31, 20, 50)
         self.t = datetime.time(10, 15, 48)
-        self.l = 10000L
+        self.l = 10000 if PY3 else long(10000)
         self.ctxt = Context({
             'n': self.n,
             't': self.t,
@@ -638,7 +679,7 @@ class FormattingTests(TestCase):
             self.assertEqual(datetime.datetime(2009, 12, 31, 6, 0, 0), form6.cleaned_data['date_added'])
             with self.settings(USE_THOUSAND_SEPARATOR=True):
                 # Checking for the localized "products_delivered" field
-                self.assertTrue('<input type="text" name="products_delivered" value="12.000" id="id_products_delivered" />' in form6.as_ul())
+                self.assertInHTML('<input type="text" name="products_delivered" value="12.000" id="id_products_delivered" />', form6.as_ul())
 
     def test_iter_format_modules(self):
         """
@@ -671,8 +712,8 @@ class FormattingTests(TestCase):
         with self.settings(USE_L10N=True,
                 FORMAT_MODULE_PATH='regressiontests.i18n.other.locale'):
             with translation.override('de', deactivate=True):
-                old = "%r" % get_format_modules(reverse=True)
-                new = "%r" % get_format_modules(reverse=True) # second try
+                old = str("%r") % get_format_modules(reverse=True)
+                new = str("%r") % get_format_modules(reverse=True) # second try
                 self.assertEqual(new, old, 'Value returned by get_formats_modules() must be preserved between calls.')
 
     def test_localize_templatetag_and_filter(self):
@@ -708,11 +749,11 @@ class MiscTests(TestCase):
         values according to the spec (and that we extract all the pieces in
         the right order).
         """
-        from django.utils.translation.trans_real import parse_accept_lang_header
-        p = parse_accept_lang_header
+        p = trans_real.parse_accept_lang_header
         # Good headers.
         self.assertEqual([('de', 1.0)], p('de'))
         self.assertEqual([('en-AU', 1.0)], p('en-AU'))
+        self.assertEqual([('es-419', 1.0)], p('es-419'))
         self.assertEqual([('*', 1.0)], p('*;q=1.00'))
         self.assertEqual([('en-AU', 0.123)], p('en-AU;q=0.123'))
         self.assertEqual([('en-au', 0.5)], p('en-au;q=0.5'))
@@ -737,6 +778,7 @@ class MiscTests(TestCase):
         self.assertEqual([], p('da, en-gb;q=0.8, en;q=0.7,#'))
         self.assertEqual([], p('de;q=2.0'))
         self.assertEqual([], p('de;q=0.a'))
+        self.assertEqual([], p('12-345'))
         self.assertEqual([], p(''))
 
     def test_parse_literal_http_header(self):
@@ -806,35 +848,45 @@ class MiscTests(TestCase):
         r.META = {'HTTP_ACCEPT_LANGUAGE': 'de'}
         self.assertEqual(g(r), 'zh-cn')
 
-    def test_get_language_from_path(self):
-        from django.utils.translation.trans_real import get_language_from_path as g
+    def test_get_language_from_path_real(self):
+        g = trans_real.get_language_from_path
         self.assertEqual(g('/pl/'), 'pl')
         self.assertEqual(g('/pl'), 'pl')
         self.assertEqual(g('/xyz/'), None)
 
-    def test_get_language_from_path(self):
+    def test_get_language_from_path_null(self):
         from django.utils.translation.trans_null import get_language_from_path as g
         self.assertEqual(g('/pl/'), None)
         self.assertEqual(g('/pl'), None)
         self.assertEqual(g('/xyz/'), None)
 
+    @override_settings(LOCALE_PATHS=extended_locale_paths)
     def test_percent_in_translatable_block(self):
-        extended_locale_paths = settings.LOCALE_PATHS + (
-            os.path.join(here, 'other', 'locale'),
-        )
-        with self.settings(LOCALE_PATHS=extended_locale_paths):
-            t_sing = Template("{% load i18n %}{% blocktrans %}The result was {{ percent }}%{% endblocktrans %}")
-            t_plur = Template("{% load i18n %}{% blocktrans count num as number %}{{ percent }}% represents {{ num }} object{% plural %}{{ percent }}% represents {{ num }} objects{% endblocktrans %}")
-            with translation.override('de'):
-                self.assertEqual(t_sing.render(Context({'percent': 42})), 'Das Ergebnis war 42%')
-                self.assertEqual(t_plur.render(Context({'percent': 42, 'num': 1})), '42% stellt 1 Objekt dar')
-                self.assertEqual(t_plur.render(Context({'percent': 42, 'num': 4})), '42% stellt 4 Objekte dar')
+        t_sing = Template("{% load i18n %}{% blocktrans %}The result was {{ percent }}%{% endblocktrans %}")
+        t_plur = Template("{% load i18n %}{% blocktrans count num as number %}{{ percent }}% represents {{ num }} object{% plural %}{{ percent }}% represents {{ num }} objects{% endblocktrans %}")
+        with translation.override('de'):
+            self.assertEqual(t_sing.render(Context({'percent': 42})), 'Das Ergebnis war 42%')
+            self.assertEqual(t_plur.render(Context({'percent': 42, 'num': 1})), '42% stellt 1 Objekt dar')
+            self.assertEqual(t_plur.render(Context({'percent': 42, 'num': 4})), '42% stellt 4 Objekte dar')
+
+    @override_settings(LOCALE_PATHS=extended_locale_paths)
+    def test_percent_formatting_in_blocktrans(self):
+        """
+        Test that using Python's %-formatting is properly escaped in blocktrans,
+        singular or plural
+        """
+        t_sing = Template("{% load i18n %}{% blocktrans %}There are %(num_comments)s comments{% endblocktrans %}")
+        t_plur = Template("{% load i18n %}{% blocktrans count num as number %}%(percent)s% represents {{ num }} object{% plural %}%(percent)s% represents {{ num }} objects{% endblocktrans %}")
+        with translation.override('de'):
+            # Strings won't get translated as they don't match after escaping %
+            self.assertEqual(t_sing.render(Context({'num_comments': 42})), 'There are %(num_comments)s comments')
+            self.assertEqual(t_plur.render(Context({'percent': 42, 'num': 1})), '%(percent)s% represents 1 object')
+            self.assertEqual(t_plur.render(Context({'percent': 42, 'num': 4})), '%(percent)s% represents 4 objects')
 
 
 class ResolutionOrderI18NTests(TestCase):
 
     def setUp(self):
-        from django.utils.translation import trans_real
         # Okay, this is brutal, but we have no other choice to fully reset
         # the translation framework
         trans_real._active = local()
@@ -863,16 +915,8 @@ class AppResolutionOrderI18NTests(ResolutionOrderI18NTests):
     def test_app_translation(self):
         self.assertUgettext('Date/time', 'APP')
 
+@override_settings(LOCALE_PATHS=extended_locale_paths)
 class LocalePathsResolutionOrderI18NTests(ResolutionOrderI18NTests):
-
-    def setUp(self):
-        self.old_locale_paths = settings.LOCALE_PATHS
-        settings.LOCALE_PATHS += (os.path.join(here, 'other', 'locale'),)
-        super(LocalePathsResolutionOrderI18NTests, self).setUp()
-
-    def tearDown(self):
-        settings.LOCALE_PATHS = self.old_locale_paths
-        super(LocalePathsResolutionOrderI18NTests, self).tearDown()
 
     def test_locale_paths_translation(self):
         self.assertUgettext('Time', 'LOCALE_PATHS')
@@ -895,9 +939,9 @@ class TestModels(TestCase):
 
     def test_safestr(self):
         c = Company(cents_paid=12, products_delivered=1)
-        c.name = SafeUnicode('Iñtërnâtiônàlizætiøn1')
+        c.name = SafeText('Iñtërnâtiônàlizætiøn1')
         c.save()
-        c.name = SafeString('Iñtërnâtiônàlizætiøn1'.encode('utf-8'))
+        c.name = SafeBytes('Iñtërnâtiônàlizætiøn1'.encode('utf-8'))
         c.save()
 
 

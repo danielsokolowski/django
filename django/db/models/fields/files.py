@@ -3,12 +3,12 @@ import os
 
 from django import forms
 from django.db.models.fields import Field
-from django.core.exceptions import ValidationError
 from django.core.files.base import File
 from django.core.files.storage import default_storage
 from django.core.files.images import ImageFile
 from django.db.models import signals
-from django.utils.encoding import force_unicode, smart_str
+from django.utils.encoding import force_str, force_text
+from django.utils import six
 from django.utils.translation import ugettext_lazy as _
 
 class FieldFile(File):
@@ -176,7 +176,7 @@ class FileDescriptor(object):
         # subclasses might also want to subclass the attribute class]. This
         # object understands how to convert a path to a file, and also how to
         # handle None.
-        if isinstance(file, basestring) or file is None:
+        if isinstance(file, six.string_types) or file is None:
             attr = self.field.attr_class(instance, self.field, file)
             instance.__dict__[self.field.name] = attr
 
@@ -206,10 +206,6 @@ class FileDescriptor(object):
 
 class FileField(Field):
 
-    default_error_messages = {
-        'max_length': _('Filename is %(extra)d characters too long.')
-    }
-
     # The class to wrap instance attributes in. Accessing the file object off
     # the instance will always return an instance of attr_class.
     attr_class = FieldFile
@@ -232,25 +228,6 @@ class FileField(Field):
         kwargs['max_length'] = kwargs.get('max_length', 100)
         super(FileField, self).__init__(verbose_name, name, **kwargs)
 
-    def validate(self, value, model_instance):
-        """
-        Validates that the generated file name still fits within max_length.
-        """
-        # The generated file name stored in the database is generally longer
-        # than the uploaded file name. Using the length of generated name in
-        # the error message would be confusing. However, in the common case
-        # (ie. upload_to='path/to/upload/dir'), the length of the generated
-        # name equals the length of the uploaded name plus a constant. Thus
-        # we can tell the user how much shorter the name should be (roughly).
-        if value and value._committed:
-            filename = value.name
-        else:
-            filename = self.generate_filename(model_instance, value.name)
-        length = len(filename)
-        if self.max_length and length > self.max_length:
-            error_values = {'extra': length - self.max_length}
-            raise ValidationError(self.error_messages['max_length'] % error_values)
-
     def get_internal_type(self):
         return "FileField"
 
@@ -264,7 +241,7 @@ class FileField(Field):
         # Need to convert File objects provided via a form to unicode for database insertion
         if value is None:
             return None
-        return unicode(value)
+        return six.text_type(value)
 
     def pre_save(self, model_instance, add):
         "Returns field's value just before saving."
@@ -279,7 +256,7 @@ class FileField(Field):
         setattr(cls, self.name, self.descriptor_class(self))
 
     def get_directory_name(self):
-        return os.path.normpath(force_unicode(datetime.datetime.now().strftime(smart_str(self.upload_to))))
+        return os.path.normpath(force_text(datetime.datetime.now().strftime(force_str(self.upload_to))))
 
     def get_filename(self, filename):
         return os.path.normpath(self.storage.get_valid_name(os.path.basename(filename)))

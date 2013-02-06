@@ -4,14 +4,20 @@ from __future__ import unicode_literals
 import copy
 import datetime
 
-from django.conf import settings
+from django.contrib.admin.tests import AdminSeleniumWebDriverTestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.urlresolvers import reverse
 from django.forms import *
 from django.forms.widgets import RadioFieldRenderer
 from django.utils import formats
 from django.utils.safestring import mark_safe
+from django.utils import six
 from django.utils.translation import activate, deactivate
 from django.test import TestCase
+from django.test.utils import override_settings
+from django.utils.encoding import python_2_unicode_compatible
+
+from ..models import Article
 
 
 class FormsWidgetTestCase(TestCase):
@@ -29,9 +35,9 @@ class FormsWidgetTestCase(TestCase):
         self.assertHTMLEqual(w.render('email', 'ŠĐĆŽćžšđ', attrs={'class': 'fun'}), '<input type="text" name="email" value="\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111" class="fun" />')
 
         # You can also pass 'attrs' to the constructor:
-        w = TextInput(attrs={'class': 'fun'})
-        self.assertHTMLEqual(w.render('email', ''), '<input type="text" class="fun" name="email" />')
-        self.assertHTMLEqual(w.render('email', 'foo@example.com'), '<input type="text" class="fun" value="foo@example.com" name="email" />')
+        w = TextInput(attrs={'class': 'fun', 'type': 'email'})
+        self.assertHTMLEqual(w.render('email', ''), '<input type="email" class="fun" name="email" />')
+        self.assertHTMLEqual(w.render('email', 'foo@example.com'), '<input type="email" class="fun" value="foo@example.com" name="email" />')
 
         # 'attrs' passed to render() get precedence over those passed to the constructor:
         w = TextInput(attrs={'class': 'pretty'})
@@ -142,25 +148,6 @@ class FormsWidgetTestCase(TestCase):
 
         self.assertHTMLEqual(w.render('email', 'ŠĐĆŽćžšđ', attrs={'class': 'fun'}), '<input type="file" class="fun" name="email" />')
 
-        # Test for the behavior of _has_changed for FileInput. The value of data will
-        # more than likely come from request.FILES. The value of initial data will
-        # likely be a filename stored in the database. Since its value is of no use to
-        # a FileInput it is ignored.
-        w = FileInput()
-
-        # No file was uploaded and no initial data.
-        self.assertFalse(w._has_changed('', None))
-
-        # A file was uploaded and no initial data.
-        self.assertTrue(w._has_changed('', {'filename': 'resume.txt', 'content': 'My resume'}))
-
-        # A file was not uploaded, but there is initial data
-        self.assertFalse(w._has_changed('resume.txt', None))
-
-        # A file was uploaded and there is initial data (file identity is not dealt
-        # with here)
-        self.assertTrue(w._has_changed('resume.txt', {'filename': 'resume.txt', 'content': 'My resume'}))
-
     def test_textarea(self):
         w = Textarea()
         self.assertHTMLEqual(w.render('msg', ''), '<textarea rows="10" cols="40" name="msg"></textarea>')
@@ -214,26 +201,18 @@ class FormsWidgetTestCase(TestCase):
         self.assertHTMLEqual(w.render('greeting', 'hello there'), '<input checked="checked" type="checkbox" name="greeting" value="hello there" />')
         self.assertHTMLEqual(w.render('greeting', 'hello & goodbye'), '<input checked="checked" type="checkbox" name="greeting" value="hello &amp; goodbye" />')
 
-        # A subtlety: If the 'check_test' argument cannot handle a value and raises any
-        # exception during its __call__, then the exception will be swallowed and the box
-        # will not be checked. In this example, the 'check_test' assumes the value has a
-        # startswith() method, which fails for the values True, False and None.
-        self.assertHTMLEqual(w.render('greeting', True), '<input type="checkbox" name="greeting" />')
-        self.assertHTMLEqual(w.render('greeting', False), '<input type="checkbox" name="greeting" />')
-        self.assertHTMLEqual(w.render('greeting', None), '<input type="checkbox" name="greeting" />')
+        # Ticket #17888: calling check_test shouldn't swallow exceptions
+        with self.assertRaises(AttributeError):
+            w.render('greeting', True)
 
         # The CheckboxInput widget will return False if the key is not found in the data
         # dictionary (because HTML form submission doesn't send any result for unchecked
         # checkboxes).
         self.assertFalse(w.value_from_datadict({}, {}, 'testing'))
 
-        self.assertFalse(w._has_changed(None, None))
-        self.assertFalse(w._has_changed(None, ''))
-        self.assertFalse(w._has_changed('', None))
-        self.assertFalse(w._has_changed('', ''))
-        self.assertTrue(w._has_changed(False, 'on'))
-        self.assertFalse(w._has_changed(True, 'on'))
-        self.assertTrue(w._has_changed(True, ''))
+        value = w.value_from_datadict({'testing': '0'}, {}, 'testing')
+        self.assertIsInstance(value, bool)
+        self.assertTrue(value)
 
     def test_select(self):
         w = Select()
@@ -407,13 +386,6 @@ class FormsWidgetTestCase(TestCase):
 <option value="2">Yes</option>
 <option value="3" selected="selected">No</option>
 </select>""")
-        self.assertTrue(w._has_changed(False, None))
-        self.assertTrue(w._has_changed(None, False))
-        self.assertFalse(w._has_changed(None, None))
-        self.assertFalse(w._has_changed(False, False))
-        self.assertTrue(w._has_changed(True, False))
-        self.assertTrue(w._has_changed(True, None))
-        self.assertTrue(w._has_changed(True, False))
 
     def test_selectmultiple(self):
         w = SelectMultiple()
@@ -526,14 +498,6 @@ class FormsWidgetTestCase(TestCase):
 
         # Unicode choices are correctly rendered as HTML
         self.assertHTMLEqual(w.render('nums', ['ŠĐĆŽćžšđ'], choices=[('ŠĐĆŽćžšđ', 'ŠĐabcĆŽćžšđ'), ('ćžšđ', 'abcćžšđ')]), '<select multiple="multiple" name="nums">\n<option value="1">1</option>\n<option value="2">2</option>\n<option value="3">3</option>\n<option value="\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111" selected="selected">\u0160\u0110abc\u0106\u017d\u0107\u017e\u0161\u0111</option>\n<option value="\u0107\u017e\u0161\u0111">abc\u0107\u017e\u0161\u0111</option>\n</select>')
-
-        # Test the usage of _has_changed
-        self.assertFalse(w._has_changed(None, None))
-        self.assertFalse(w._has_changed([], None))
-        self.assertTrue(w._has_changed(None, ['1']))
-        self.assertFalse(w._has_changed([1, 2], ['1', '2']))
-        self.assertTrue(w._has_changed([1, 2], ['1']))
-        self.assertTrue(w._has_changed([1, 2], ['1', '3']))
 
         # Choices can be nested one level in order to create HTML optgroups:
         w.choices = (('outer1', 'Outer 1'), ('Group "1"', (('inner1', 'Inner 1'), ('inner2', 'Inner 2'))))
@@ -676,7 +640,7 @@ beatle J R Ringo False""")
         # You can create your own custom renderers for RadioSelect to use.
         class MyRenderer(RadioFieldRenderer):
            def render(self):
-               return '<br />\n'.join([unicode(choice) for choice in self])
+               return '<br />\n'.join([six.text_type(choice) for choice in self])
         w = RadioSelect(renderer=MyRenderer)
         self.assertHTMLEqual(w.render('beatle', 'G', choices=(('J', 'John'), ('P', 'Paul'), ('G', 'George'), ('R', 'Ringo'))), """<label><input type="radio" name="beatle" value="J" /> John</label><br />
 <label><input type="radio" name="beatle" value="P" /> Paul</label><br />
@@ -716,7 +680,7 @@ beatle J R Ringo False""")
 
         # Unicode choices are correctly rendered as HTML
         w = RadioSelect()
-        self.assertHTMLEqual(unicode(w.render('email', 'ŠĐĆŽćžšđ', choices=[('ŠĐĆŽćžšđ', 'ŠĐabcĆŽćžšđ'), ('ćžšđ', 'abcćžšđ')])), '<ul>\n<li><label><input checked="checked" type="radio" name="email" value="\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111" /> \u0160\u0110abc\u0106\u017d\u0107\u017e\u0161\u0111</label></li>\n<li><label><input type="radio" name="email" value="\u0107\u017e\u0161\u0111" /> abc\u0107\u017e\u0161\u0111</label></li>\n</ul>')
+        self.assertHTMLEqual(six.text_type(w.render('email', 'ŠĐĆŽćžšđ', choices=[('ŠĐĆŽćžšđ', 'ŠĐabcĆŽćžšđ'), ('ćžšđ', 'abcćžšđ')])), '<ul>\n<li><label><input checked="checked" type="radio" name="email" value="\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111" /> \u0160\u0110abc\u0106\u017d\u0107\u017e\u0161\u0111</label></li>\n<li><label><input type="radio" name="email" value="\u0107\u017e\u0161\u0111" /> abc\u0107\u017e\u0161\u0111</label></li>\n</ul>')
 
         # Attributes provided at instantiation are passed to the constituent inputs
         w = RadioSelect(attrs={'id':'foo'})
@@ -836,20 +800,18 @@ beatle J R Ringo False""")
 <li><label><input type="checkbox" name="escape" value="good" /> you &gt; me</label></li>
 </ul>""")
 
-        # Test the usage of _has_changed
-        self.assertFalse(w._has_changed(None, None))
-        self.assertFalse(w._has_changed([], None))
-        self.assertTrue(w._has_changed(None, ['1']))
-        self.assertFalse(w._has_changed([1, 2], ['1', '2']))
-        self.assertTrue(w._has_changed([1, 2], ['1']))
-        self.assertTrue(w._has_changed([1, 2], ['1', '3']))
-        self.assertFalse(w._has_changed([2, 1], ['1', '2']))
-
         # Unicode choices are correctly rendered as HTML
         self.assertHTMLEqual(w.render('nums', ['ŠĐĆŽćžšđ'], choices=[('ŠĐĆŽćžšđ', 'ŠĐabcĆŽćžšđ'), ('ćžšđ', 'abcćžšđ')]), '<ul>\n<li><label><input type="checkbox" name="nums" value="1" /> 1</label></li>\n<li><label><input type="checkbox" name="nums" value="2" /> 2</label></li>\n<li><label><input type="checkbox" name="nums" value="3" /> 3</label></li>\n<li><label><input checked="checked" type="checkbox" name="nums" value="\u0160\u0110\u0106\u017d\u0107\u017e\u0161\u0111" /> \u0160\u0110abc\u0106\u017d\u0107\u017e\u0161\u0111</label></li>\n<li><label><input type="checkbox" name="nums" value="\u0107\u017e\u0161\u0111" /> abc\u0107\u017e\u0161\u0111</label></li>\n</ul>')
 
         # Each input gets a separate ID
         self.assertHTMLEqual(CheckboxSelectMultiple().render('letters', list('ac'), choices=zip(list('abc'), list('ABC')), attrs={'id': 'abc'}), """<ul>
+<li><label for="abc_0"><input checked="checked" type="checkbox" name="letters" value="a" id="abc_0" /> A</label></li>
+<li><label for="abc_1"><input type="checkbox" name="letters" value="b" id="abc_1" /> B</label></li>
+<li><label for="abc_2"><input checked="checked" type="checkbox" name="letters" value="c" id="abc_2" /> C</label></li>
+</ul>""")
+
+        # Each input gets a separate ID when the ID is passed to the constructor
+        self.assertHTMLEqual(CheckboxSelectMultiple(attrs={'id': 'abc'}).render('letters', list('ac'), choices=zip(list('abc'), list('ABC'))), """<ul>
 <li><label for="abc_0"><input checked="checked" type="checkbox" name="letters" value="a" id="abc_0" /> A</label></li>
 <li><label for="abc_1"><input type="checkbox" name="letters" value="b" id="abc_1" /> B</label></li>
 <li><label for="abc_2"><input checked="checked" type="checkbox" name="letters" value="c" id="abc_2" /> C</label></li>
@@ -871,21 +833,6 @@ beatle J R Ringo False""")
         w = MyMultiWidget(widgets=(TextInput(attrs={'class': 'big'}), TextInput(attrs={'class': 'small'})), attrs={'id': 'bar'})
         self.assertHTMLEqual(w.render('name', ['john', 'lennon']), '<input id="bar_0" type="text" class="big" value="john" name="name_0" /><br /><input id="bar_1" type="text" class="small" value="lennon" name="name_1" />')
 
-        w = MyMultiWidget(widgets=(TextInput(), TextInput()))
-
-        # test with no initial data
-        self.assertTrue(w._has_changed(None, ['john', 'lennon']))
-
-        # test when the data is the same as initial
-        self.assertFalse(w._has_changed('john__lennon', ['john', 'lennon']))
-
-        # test when the first widget's data has changed
-        self.assertTrue(w._has_changed('john__lennon', ['alfred', 'lennon']))
-
-        # test when the last widget's data has changed. this ensures that it is not
-        # short circuiting while testing the widgets.
-        self.assertTrue(w._has_changed('john__lennon', ['john', 'denver']))
-
     def test_splitdatetime(self):
         w = SplitDateTimeWidget()
         self.assertHTMLEqual(w.render('date', ''), '<input type="text" name="date_0" /><input type="text" name="date_1" />')
@@ -901,10 +848,6 @@ beatle J R Ringo False""")
         w = SplitDateTimeWidget(date_format='%d/%m/%Y', time_format='%H:%M')
         self.assertHTMLEqual(w.render('date', datetime.datetime(2006, 1, 10, 7, 30)), '<input type="text" name="date_0" value="10/01/2006" /><input type="text" name="date_1" value="07:30" />')
 
-        self.assertTrue(w._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['2008-05-06', '12:40:00']))
-        self.assertFalse(w._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['06/05/2008', '12:40']))
-        self.assertTrue(w._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['06/05/2008', '12:41']))
-
     def test_datetimeinput(self):
         w = DateTimeInput()
         self.assertHTMLEqual(w.render('date', None), '<input type="text" name="date" />')
@@ -917,15 +860,8 @@ beatle J R Ringo False""")
         self.assertHTMLEqual(w.render('date', datetime.datetime(2007, 9, 17, 12, 51)), '<input type="text" name="date" value="2007-09-17 12:51:00" />')
 
         # Use 'format' to change the way a value is displayed.
-        w = DateTimeInput(format='%d/%m/%Y %H:%M')
-        self.assertHTMLEqual(w.render('date', d), '<input type="text" name="date" value="17/09/2007 12:51" />')
-        self.assertFalse(w._has_changed(d, '17/09/2007 12:51'))
-
-        # Make sure a custom format works with _has_changed. The hidden input will use
-        data = datetime.datetime(2010, 3, 6, 12, 0, 0)
-        custom_format = '%d.%m.%Y %H:%M'
-        w = DateTimeInput(format=custom_format)
-        self.assertFalse(w._has_changed(formats.localize_input(data), data.strftime(custom_format)))
+        w = DateTimeInput(format='%d/%m/%Y %H:%M', attrs={'type': 'datetime'})
+        self.assertHTMLEqual(w.render('date', d), '<input type="datetime" name="date" value="17/09/2007 12:51" />')
 
     def test_dateinput(self):
         w = DateInput()
@@ -940,15 +876,8 @@ beatle J R Ringo False""")
         self.assertHTMLEqual(w.render('date', '2007-09-17'), '<input type="text" name="date" value="2007-09-17" />')
 
         # Use 'format' to change the way a value is displayed.
-        w = DateInput(format='%d/%m/%Y')
-        self.assertHTMLEqual(w.render('date', d), '<input type="text" name="date" value="17/09/2007" />')
-        self.assertFalse(w._has_changed(d, '17/09/2007'))
-
-        # Make sure a custom format works with _has_changed. The hidden input will use
-        data = datetime.date(2010, 3, 6)
-        custom_format = '%d.%m.%Y'
-        w = DateInput(format=custom_format)
-        self.assertFalse(w._has_changed(formats.localize_input(data), data.strftime(custom_format)))
+        w = DateInput(format='%d/%m/%Y', attrs={'type': 'date'})
+        self.assertHTMLEqual(w.render('date', d), '<input type="date" name="date" value="17/09/2007" />')
 
     def test_timeinput(self):
         w = TimeInput()
@@ -965,15 +894,8 @@ beatle J R Ringo False""")
         self.assertHTMLEqual(w.render('time', '13:12:11'), '<input type="text" name="time" value="13:12:11" />')
 
         # Use 'format' to change the way a value is displayed.
-        w = TimeInput(format='%H:%M')
-        self.assertHTMLEqual(w.render('time', t), '<input type="text" name="time" value="12:51" />')
-        self.assertFalse(w._has_changed(t, '12:51'))
-
-        # Make sure a custom format works with _has_changed. The hidden input will use
-        data = datetime.time(13, 0)
-        custom_format = '%I:%M %p'
-        w = TimeInput(format=custom_format)
-        self.assertFalse(w._has_changed(formats.localize_input(data), data.strftime(custom_format)))
+        w = TimeInput(format='%H:%M', attrs={'type': 'time'})
+        self.assertHTMLEqual(w.render('time', t), '<input type="time" name="time" value="12:51" />')
 
     def test_splithiddendatetime(self):
         from django.forms.widgets import SplitHiddenDateTimeWidget
@@ -991,21 +913,15 @@ class NullBooleanSelectLazyForm(Form):
     """Form to test for lazy evaluation. Refs #17190"""
     bool = BooleanField(widget=NullBooleanSelect())
 
+@override_settings(USE_L10N=True)
 class FormsI18NWidgetsTestCase(TestCase):
     def setUp(self):
         super(FormsI18NWidgetsTestCase, self).setUp()
-        self.old_use_l10n = getattr(settings, 'USE_L10N', False)
-        settings.USE_L10N = True
         activate('de-at')
 
     def tearDown(self):
         deactivate()
-        settings.USE_L10N = self.old_use_l10n
         super(FormsI18NWidgetsTestCase, self).tearDown()
-
-    def test_splitdatetime(self):
-        w = SplitDateTimeWidget(date_format='%d/%m/%Y', time_format='%H:%M')
-        self.assertTrue(w._has_changed(datetime.datetime(2008, 5, 6, 12, 40, 00), ['06.05.2008', '12:41']))
 
     def test_datetimeinput(self):
         w = DateTimeInput()
@@ -1095,6 +1011,23 @@ class WidgetTests(TestCase):
         self.assertFalse(form.is_valid())
 
 
+class LiveWidgetTests(AdminSeleniumWebDriverTestCase):
+    urls = 'regressiontests.forms.urls'
+
+    def test_textarea_trailing_newlines(self):
+        """
+        Test that a roundtrip on a ModelForm doesn't alter the TextField value
+        """
+        article = Article.objects.create(content="\nTst\n")
+        self.selenium.get('%s%s' % (self.live_server_url,
+            reverse('article_form', args=[article.pk])))
+        self.selenium.find_element_by_id('submit').submit()
+        article = Article.objects.get(pk=article.pk)
+        # Should be "\nTst\n" after #19251 is fixed
+        self.assertEqual(article.content, "\r\nTst\r\n")
+
+
+@python_2_unicode_compatible
 class FakeFieldFile(object):
     """
     Quacks like a FieldFile (has a .url and unicode representation), but
@@ -1103,7 +1036,7 @@ class FakeFieldFile(object):
     """
     url = 'something'
 
-    def __unicode__(self):
+    def __str__(self):
         return self.url
 
 class ClearableFileInputTests(TestCase):
@@ -1124,10 +1057,11 @@ class ClearableFileInputTests(TestCase):
         rendering HTML. Refs #15182.
         """
 
+        @python_2_unicode_compatible
         class StrangeFieldFile(object):
             url = "something?chapter=1&sect=2&copy=3&lang=en"
 
-            def __unicode__(self):
+            def __str__(self):
                 return '''something<div onclick="alert('oops')">.jpg'''
 
         widget = ClearableFileInput()
@@ -1135,7 +1069,7 @@ class ClearableFileInputTests(TestCase):
         output = widget.render('my<div>file', field)
         self.assertFalse(field.url in output)
         self.assertTrue('href="something?chapter=1&amp;sect=2&amp;copy=3&amp;lang=en"' in output)
-        self.assertFalse(unicode(field) in output)
+        self.assertFalse(six.text_type(field) in output)
         self.assertTrue('something&lt;div onclick=&quot;alert(&#39;oops&#39;)&quot;&gt;.jpg' in output)
         self.assertTrue('my&lt;div&gt;file' in output)
         self.assertFalse('my<div>file' in output)

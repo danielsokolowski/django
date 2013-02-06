@@ -6,8 +6,9 @@ from optparse import make_option
 
 from django.core.files.storage import FileSystemStorage
 from django.core.management.base import CommandError, NoArgsCommand
-from django.utils.encoding import smart_unicode
+from django.utils.encoding import smart_text
 from django.utils.datastructures import SortedDict
+from django.utils.six.moves import input
 
 from django.contrib.staticfiles import finders, storage
 
@@ -59,9 +60,6 @@ class Command(NoArgsCommand):
             self.local = False
         else:
             self.local = True
-        # Use ints for file times (ticket #14665), if supported
-        if hasattr(os, 'stat_float_times'):
-            os.stat_float_times(False)
 
     def set_options(self, **options):
         """
@@ -119,7 +117,7 @@ class Command(NoArgsCommand):
                                                   dry_run=self.dry_run)
             for original_path, processed_path, processed in processor:
                 if processed:
-                    self.log("Post-processed '%s' as '%s" %
+                    self.log("Post-processed '%s' as '%s'" %
                              (original_path, processed_path), level=1)
                     self.post_processed_files.append(original_path)
                 else:
@@ -148,7 +146,7 @@ class Command(NoArgsCommand):
             clear_display = 'This will overwrite existing files!'
 
         if self.interactive:
-            confirm = raw_input("""
+            confirm = input("""
 You have requested to collect static files at the destination
 location as specified in your settings%s
 
@@ -191,16 +189,16 @@ Type 'yes' to continue, or 'no' to cancel: """
 
     def clear_dir(self, path):
         """
-        Deletes the given relative path using the destinatin storage backend.
+        Deletes the given relative path using the destination storage backend.
         """
         dirs, files = self.storage.listdir(path)
         for f in files:
             fpath = os.path.join(path, f)
             if self.dry_run:
                 self.log("Pretending to delete '%s'" %
-                         smart_unicode(fpath), level=1)
+                         smart_text(fpath), level=1)
             else:
-                self.log("Deleting '%s'" % smart_unicode(fpath), level=1)
+                self.log("Deleting '%s'" % smart_text(fpath), level=1)
                 self.storage.delete(fpath)
         for d in dirs:
             self.clear_dir(os.path.join(path, d))
@@ -230,7 +228,9 @@ Type 'yes' to continue, or 'no' to cancel: """
                     else:
                         full_path = None
                     # Skip the file if the source file is younger
-                    if target_last_modified >= source_last_modified:
+                    # Avoid sub-second precision (see #14665, #19540)
+                    if (target_last_modified.replace(microsecond=0)
+                            >= source_last_modified.replace(microsecond=0)):
                         if not ((self.symlink and full_path
                                  and not os.path.islink(full_path)) or
                                 (not self.symlink and full_path

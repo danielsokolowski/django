@@ -18,9 +18,12 @@ from django.db.backends.signals import connection_created
 from django.db.backends.sqlite3.client import DatabaseClient
 from django.db.backends.sqlite3.creation import DatabaseCreation
 from django.db.backends.sqlite3.introspection import DatabaseIntrospection
+from django.db.models import fields
+from django.db.models.sql import aggregates
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.functional import cached_property
-from django.utils.safestring import SafeString
+from django.utils.safestring import SafeBytes
+from django.utils import six
 from django.utils import timezone
 
 try:
@@ -56,15 +59,23 @@ def adapt_datetime_with_timezone_support(value):
             default_timezone = timezone.get_default_timezone()
             value = timezone.make_aware(value, default_timezone)
         value = value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value.isoformat(b" ")
+    return value.isoformat(str(" "))
 
-Database.register_converter(b"bool", lambda s: str(s) == '1')
-Database.register_converter(b"time", parse_time)
-Database.register_converter(b"date", parse_date)
-Database.register_converter(b"datetime", parse_datetime_with_timezone_support)
-Database.register_converter(b"timestamp", parse_datetime_with_timezone_support)
-Database.register_converter(b"TIMESTAMP", parse_datetime_with_timezone_support)
-Database.register_converter(b"decimal", util.typecast_decimal)
+def decoder(conv_func):
+    """ The Python sqlite3 interface returns always byte strings.
+        This function converts the received value to a regular string before
+        passing it to the receiver function.
+    """
+    return lambda s: conv_func(s.decode('utf-8'))
+
+Database.register_converter(str("bool"), decoder(lambda s: s == '1'))
+Database.register_converter(str("time"), decoder(parse_time))
+Database.register_converter(str("date"), decoder(parse_date))
+Database.register_converter(str("datetime"), decoder(parse_datetime_with_timezone_support))
+Database.register_converter(str("timestamp"), decoder(parse_datetime_with_timezone_support))
+Database.register_converter(str("TIMESTAMP"), decoder(parse_datetime_with_timezone_support))
+Database.register_converter(str("decimal"), decoder(util.typecast_decimal))
+
 Database.register_adapter(datetime.datetime, adapt_datetime_with_timezone_support)
 Database.register_adapter(decimal.Decimal, util.rev_typecast_decimal)
 if Database.version_info >= (2, 4, 1):
@@ -74,7 +85,7 @@ if Database.version_info >= (2, 4, 1):
     # slow-down, this adapter is only registered for sqlite3 versions
     # needing it (Python 2.6 and up).
     Database.register_adapter(str, lambda s: s.decode('utf-8'))
-    Database.register_adapter(SafeString, lambda s: s.decode('utf-8'))
+    Database.register_adapter(SafeBytes, lambda s: s.decode('utf-8'))
 
 class DatabaseFeatures(BaseDatabaseFeatures):
     # SQLite cannot handle us only partially reading from a cursor's result set
@@ -88,7 +99,7 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     supports_1000_query_parameters = False
     supports_mixed_date_datetime_comparisons = False
     has_bulk_insert = True
-    can_combine_inserts_with_and_without_auto_increment_pk = True
+    can_combine_inserts_with_and_without_auto_increment_pk = False
 
     @cached_property
     def supports_stddev(self):
@@ -110,6 +121,28 @@ class DatabaseFeatures(BaseDatabaseFeatures):
         return has_support
 
 class DatabaseOperations(BaseDatabaseOperations):
+    def bulk_batch_size(self, fields, objs):
+        """
+        SQLite has a compile-time default (SQLITE_LIMIT_VARIABLE_NUMBER) of
+        999 variables per query.
+
+        If there is just single field to insert, then we can hit another
+        limit, SQLITE_MAX_COMPOUND_SELECT which defaults to 500.
+        """
+        limit = 999 if len(fields) > 1 else 500
+        return (limit // len(fields)) if len(fields) > 0 else len(objs)
+
+    def check_aggregate_support(self, aggregate):
+        bad_fields = (fields.DateField, fields.DateTimeField, fields.TimeField)
+        bad_aggregates = (aggregates.Sum, aggregates.Avg,
+                          aggregates.Variance, aggregates.StdDev)
+        if (isinstance(aggregate.source, bad_fields) and
+                isinstance(aggregate, bad_aggregates)):
+            raise NotImplementedError(
+                'You cannot use Sum, Avg, StdDev and Variance aggregations '
+                'on date/time fields in sqlite3 '
+                'since date/time is saved as text.')
+
     def date_extract_sql(self, lookup_type, field_name):
         # sqlite doesn't support extract, so we fake it with the user-defined
         # function django_extract that's registered in connect(). Note that
@@ -172,7 +205,7 @@ class DatabaseOperations(BaseDatabaseOperations):
             else:
                 raise ValueError("SQLite backend does not support timezone-aware datetimes when USE_TZ is False.")
 
-        return unicode(value)
+        return six.text_type(value)
 
     def value_to_db_time(self, value):
         if value is None:
@@ -182,7 +215,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         if timezone.is_aware(value):
             raise ValueError("SQLite backend does not support timezone-aware times.")
 
-        return unicode(value)
+        return six.text_type(value)
 
     def year_lookup_bounds(self, value):
         first = '%s-01-01'
@@ -214,7 +247,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         res.append("SELECT %s" % ", ".join(
             "%%s AS %s" % self.quote_name(f.column) for f in fields
         ))
-        res.extend(["UNION SELECT %s" % ", ".join(["%s"] * len(fields))] * (num_values - 1))
+        res.extend(["UNION ALL SELECT %s" % ", ".join(["%s"] * len(fields))] * (num_values - 1))
         return " ".join(res)
 
 class DatabaseWrapper(BaseDatabaseWrapper):
@@ -249,7 +282,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         self.introspection = DatabaseIntrospection(self)
         self.validation = BaseDatabaseValidation(self)
 
-    def _sqlite_create_connection(self):
+    def get_connection_params(self):
         settings_dict = self.settings_dict
         if not settings_dict['NAME']:
             from django.core.exceptions import ImproperlyConfigured
@@ -276,12 +309,24 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                 RuntimeWarning
             )
         kwargs.update({'check_same_thread': False})
-        self.connection = Database.connect(**kwargs)
+        return kwargs
+
+    def get_new_connection(self, conn_params):
+        conn = Database.connect(**conn_params)
         # Register extract, date_trunc, and regexp functions.
-        self.connection.create_function("django_extract", 2, _sqlite_extract)
-        self.connection.create_function("django_date_trunc", 2, _sqlite_date_trunc)
-        self.connection.create_function("regexp", 2, _sqlite_regexp)
-        self.connection.create_function("django_format_dtdelta", 5, _sqlite_format_dtdelta)
+        conn.create_function("django_extract", 2, _sqlite_extract)
+        conn.create_function("django_date_trunc", 2, _sqlite_date_trunc)
+        conn.create_function("regexp", 2, _sqlite_regexp)
+        conn.create_function("django_format_dtdelta", 5, _sqlite_format_dtdelta)
+        return conn
+
+    def init_connection_state(self):
+        pass
+
+    def _sqlite_create_connection(self):
+        conn_params = self.get_connection_params()
+        self.connection = self.get_new_connection(conn_params)
+        self.init_connection_state()
         connection_created.send(sender=self.__class__, connection=self)
 
     def _cursor(self):
@@ -344,18 +389,18 @@ class SQLiteCursorWrapper(Database.Cursor):
         try:
             return Database.Cursor.execute(self, query, params)
         except Database.IntegrityError as e:
-            raise utils.IntegrityError, utils.IntegrityError(*tuple(e)), sys.exc_info()[2]
+            six.reraise(utils.IntegrityError, utils.IntegrityError(*tuple(e.args)), sys.exc_info()[2])
         except Database.DatabaseError as e:
-            raise utils.DatabaseError, utils.DatabaseError(*tuple(e)), sys.exc_info()[2]
+            six.reraise(utils.DatabaseError, utils.DatabaseError(*tuple(e.args)), sys.exc_info()[2])
 
     def executemany(self, query, param_list):
         query = self.convert_query(query)
         try:
             return Database.Cursor.executemany(self, query, param_list)
         except Database.IntegrityError as e:
-            raise utils.IntegrityError, utils.IntegrityError(*tuple(e)), sys.exc_info()[2]
+            six.reraise(utils.IntegrityError, utils.IntegrityError(*tuple(e.args)), sys.exc_info()[2])
         except Database.DatabaseError as e:
-            raise utils.DatabaseError, utils.DatabaseError(*tuple(e)), sys.exc_info()[2]
+            six.reraise(utils.DatabaseError, utils.DatabaseError(*tuple(e.args)), sys.exc_info()[2])
 
     def convert_query(self, query):
         return FORMAT_QMARK_REGEX.sub('?', query).replace('%%', '%')
@@ -399,7 +444,4 @@ def _sqlite_format_dtdelta(dt, conn, days, secs, usecs):
     return str(dt)
 
 def _sqlite_regexp(re_pattern, re_string):
-    try:
-        return bool(re.search(re_pattern, re_string))
-    except:
-        return False
+    return bool(re.search(re_pattern, re_string))

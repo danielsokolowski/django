@@ -8,8 +8,6 @@ from django.utils import text
 
 class TestUtilsText(SimpleTestCase):
 
-    # In Django 1.6 truncate_words() and truncate_html_words() will be removed
-    # so these tests will need to be adapted accordingly
     def test_truncate_chars(self):
         truncator = text.Truncator(
             'The quick brown fox jumped over the lazy dog.'
@@ -73,30 +71,6 @@ class TestUtilsText(SimpleTestCase):
         self.assertEqual('<p>The quick <a href="xyz.html"\n'
             'id="mylink">brown...</a></p>', truncator.words(3, '...', html=True))
 
-    def test_old_truncate_words(self):
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            self.assertEqual('The quick brown fox jumped over the lazy dog.',
-                text.truncate_words('The quick brown fox jumped over the lazy dog.', 10))
-            self.assertEqual('The quick brown fox ...',
-                text.truncate_words('The quick brown fox jumped over the lazy dog.', 4))
-            self.assertEqual('The quick brown fox ....',
-                text.truncate_words('The quick brown fox jumped over the lazy dog.', 4, '....'))
-            self.assertGreater(len(w), 0)
-
-    def test_old_truncate_html_words(self):
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            self.assertEqual('<p><strong><em>The quick brown fox jumped over the lazy dog.</em></strong></p>',
-                text.truncate_html_words('<p><strong><em>The quick brown fox jumped over the lazy dog.</em></strong></p>', 10))
-            self.assertEqual('<p><strong><em>The quick brown fox ...</em></strong></p>',
-                text.truncate_html_words('<p><strong><em>The quick brown fox jumped over the lazy dog.</em></strong></p>', 4))
-            self.assertEqual('<p><strong><em>The quick brown fox ....</em></strong></p>',
-                text.truncate_html_words('<p><strong><em>The quick brown fox jumped over the lazy dog.</em></strong></p>', 4, '....'))
-            self.assertEqual('<p><strong><em>The quick brown fox</em></strong></p>',
-                text.truncate_html_words('<p><strong><em>The quick brown fox jumped over the lazy dog.</em></strong></p>', 4, None))
-            self.assertGreater(len(w), 0)
-
     def test_wrap(self):
         digits = '1234 67 9'
         self.assertEqual(text.wrap(digits, 100), '1234 67 9')
@@ -113,3 +87,11 @@ class TestUtilsText(SimpleTestCase):
         self.assertEqual(text.wrap(long_word, 20), long_word)
         self.assertEqual(text.wrap('a %s word' % long_word, 10),
                          'a\n%s\nword' % long_word)
+
+    def test_slugify(self):
+        items = (
+            ('Hello, World!', 'hello-world'),
+            ('spam & eggs', 'spam-eggs'),
+        )
+        for value, output in items:
+            self.assertEqual(text.slugify(value), output)

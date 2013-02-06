@@ -12,10 +12,17 @@ from django.db import models
 from django.core.serializers.base import DeserializationError
 from django.core.serializers.python import Serializer as PythonSerializer
 from django.core.serializers.python import Deserializer as PythonDeserializer
-from django.utils.encoding import smart_str
+from django.utils import six
+
+# Use the C (faster) implementation if possible
+try:
+    from yaml import CSafeLoader as SafeLoader
+    from yaml import CSafeDumper as SafeDumper
+except ImportError:
+    from yaml import SafeLoader, SafeDumper
 
 
-class DjangoSafeDumper(yaml.SafeDumper):
+class DjangoSafeDumper(SafeDumper):
     def represent_decimal(self, data):
         return self.represent_scalar('tag:yaml.org,2002:str', str(data))
 
@@ -53,12 +60,12 @@ def Deserializer(stream_or_string, **options):
     """
     if isinstance(stream_or_string, bytes):
         stream_or_string = stream_or_string.decode('utf-8')
-    if isinstance(stream_or_string, basestring):
+    if isinstance(stream_or_string, six.string_types):
         stream = StringIO(stream_or_string)
     else:
         stream = stream_or_string
     try:
-        for obj in PythonDeserializer(yaml.safe_load(stream), **options):
+        for obj in PythonDeserializer(yaml.load(stream, Loader=SafeLoader), **options):
             yield obj
     except GeneratorExit:
         raise

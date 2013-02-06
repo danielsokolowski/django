@@ -5,8 +5,8 @@ from datetime import datetime
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.admin import helpers
-from django.contrib.admin.util import (display_for_field, label_for_field,
-    lookup_field, NestedObjects)
+from django.contrib.admin.util import (display_for_field, flatten_fieldsets,
+    label_for_field, lookup_field, NestedObjects)
 from django.contrib.admin.views.main import EMPTY_CHANGELIST_VALUE
 from django.contrib.sites.models import Site
 from django.db import models, DEFAULT_DB_ALIAS
@@ -15,8 +15,9 @@ from django.test import TestCase
 from django.utils import unittest
 from django.utils.formats import localize
 from django.utils.safestring import mark_safe
+from django.utils import six
 
-from .models import Article, Count, Event, Location
+from .models import Article, Count, Event, Location, EventGuide
 
 
 class NestedObjectsTests(TestCase):
@@ -69,6 +70,17 @@ class NestedObjectsTests(TestCase):
         # 1 query to fetch all children of 1 and 2 (none)
         # Should not require additional queries to populate the nested graph.
         self.assertNumQueries(2, self._collect, 0)
+
+    def test_on_delete_do_nothing(self):
+        """
+        Check that the nested collector doesn't query for DO_NOTHING objects.
+        """
+        n = NestedObjects(using=DEFAULT_DB_ALIAS)
+        objs = [Event.objects.create()]
+        EventGuide.objects.create(event=objs[0])
+        with self.assertNumQueries(2):
+            # One for Location, one for Guest, and no query for EventGuide
+            n.collect(objs)
 
 class UtilTests(unittest.TestCase):
     def test_values_from_lookup_field(self):
@@ -170,7 +182,7 @@ class UtilTests(unittest.TestCase):
         )
         self.assertEqual(
             label_for_field("__str__", Article),
-            b"article"
+            str("article")
         )
 
         self.assertRaises(
@@ -249,18 +261,22 @@ class UtilTests(unittest.TestCase):
 
         log_entry.action_flag = admin.models.ADDITION
         self.assertTrue(
-            unicode(log_entry).startswith('Added ')
+            six.text_type(log_entry).startswith('Added ')
         )
 
         log_entry.action_flag = admin.models.CHANGE
         self.assertTrue(
-            unicode(log_entry).startswith('Changed ')
+            six.text_type(log_entry).startswith('Changed ')
         )
 
         log_entry.action_flag = admin.models.DELETION
         self.assertTrue(
-            unicode(log_entry).startswith('Deleted ')
+            six.text_type(log_entry).startswith('Deleted ')
         )
+
+        # Make sure custom action_flags works
+        log_entry.action_flag = 4
+        self.assertEqual(six.text_type(log_entry), 'LogEntry Object')
 
     def test_safestring_in_field_label(self):
         # safestring should not be escaped
@@ -284,3 +300,21 @@ class UtilTests(unittest.TestCase):
                          '<label for="id_text" class="required inline">&amp;text:</label>')
         self.assertEqual(helpers.AdminField(form, 'cb', is_first=False).label_tag(),
                          '<label for="id_cb" class="vCheckboxLabel required inline">&amp;cb</label>')
+
+    def test_flatten_fieldsets(self):
+        """
+        Regression test for #18051
+        """
+        fieldsets = (
+            (None, {
+                'fields': ('url', 'title', ('content', 'sites'))
+            }),
+        )
+        self.assertEqual(flatten_fieldsets(fieldsets), ['url', 'title', 'content', 'sites'])
+
+        fieldsets = (
+            (None, {
+                'fields': ('url', 'title', ['content', 'sites'])
+            }),
+        )
+        self.assertEqual(flatten_fieldsets(fieldsets), ['url', 'title', 'content', 'sites'])

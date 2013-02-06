@@ -91,7 +91,7 @@ class ClientTest(TestCase):
                                     content_type="text/xml")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.templates[0].name, "Book template")
-        self.assertEqual(response.content, "Blink - Malcolm Gladwell")
+        self.assertEqual(response.content, b"Blink - Malcolm Gladwell")
 
     def test_redirect(self):
         "GET a URL that redirects elsewhere"
@@ -215,7 +215,7 @@ class ClientTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "Invalid POST Template")
 
-        self.assertFormError(response, 'form', 'email', 'Enter a valid e-mail address.')
+        self.assertFormError(response, 'form', 'email', 'Enter a valid email address.')
 
     def test_valid_form_with_template(self):
         "POST valid data to a form using multiple templates"
@@ -263,7 +263,7 @@ class ClientTest(TestCase):
         self.assertTemplateUsed(response, 'base.html')
         self.assertTemplateNotUsed(response, "Invalid POST Template")
 
-        self.assertFormError(response, 'form', 'email', 'Enter a valid e-mail address.')
+        self.assertFormError(response, 'form', 'email', 'Enter a valid email address.')
 
     def test_unknown_page(self):
         "GET an invalid URL"

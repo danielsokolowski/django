@@ -6,8 +6,10 @@ import decimal
 
 from django.template.defaultfilters import *
 from django.test import TestCase
+from django.utils import six
 from django.utils import unittest, translation
 from django.utils.safestring import SafeData
+from django.utils.encoding import python_2_unicode_compatible
 
 
 class DefaultFiltersTests(TestCase):
@@ -48,13 +50,13 @@ class DefaultFiltersTests(TestCase):
                                      '0.00000000000000000002')
 
         pos_inf = float(1e30000)
-        self.assertEqual(floatformat(pos_inf), unicode(pos_inf))
+        self.assertEqual(floatformat(pos_inf), six.text_type(pos_inf))
 
         neg_inf = float(-1e30000)
-        self.assertEqual(floatformat(neg_inf), unicode(neg_inf))
+        self.assertEqual(floatformat(neg_inf), six.text_type(neg_inf))
 
         nan = pos_inf / pos_inf
-        self.assertEqual(floatformat(nan), unicode(nan))
+        self.assertEqual(floatformat(nan), six.text_type(nan))
 
         class FloatWrapper(object):
             def __init__(self, value):
@@ -78,12 +80,15 @@ class DefaultFiltersTests(TestCase):
             decimal_ctx.prec = old_prec
 
 
-    # This fails because of Python's float handling. Floats with many zeroes
-    # after the decimal point should be passed in as another type such as
-    # unicode or Decimal.
-    @unittest.expectedFailure
-    def test_floatformat_fail(self):
+    def test_floatformat_py2_fail(self):
         self.assertEqual(floatformat(1.00000000000000015, 16), '1.0000000000000002')
+
+    # The test above fails because of Python 2's float handling. Floats with
+    # many zeroes after the decimal point should be passed in as another type
+    # such as unicode or Decimal.
+    if not six.PY3:
+        test_floatformat_py2_fail = unittest.expectedFailure(test_floatformat_py2_fail)
+
 
     def test_addslashes(self):
         self.assertEqual(addslashes('"double quotes" and \'single quotes\''),
@@ -297,6 +302,19 @@ class DefaultFiltersTests(TestCase):
         self.assertEqual(urlize('HTTPS://github.com/'),
             '<a href="https://github.com/" rel="nofollow">HTTPS://github.com/</a>')
 
+        # Check urlize trims trailing period when followed by parenthesis - see #18644
+        self.assertEqual(urlize('(Go to http://www.example.com/foo.)'),
+            '(Go to <a href="http://www.example.com/foo" rel="nofollow">http://www.example.com/foo</a>.)')
+
+        # Check urlize doesn't crash when square bracket is appended to url (#19070)
+        self.assertEqual(urlize('[see www.example.com]'),
+            '[see <a href="http://www.example.com" rel="nofollow">www.example.com</a>]' )
+
+        # Check urlize doesn't crash when square bracket is prepended to url (#19070)
+        self.assertEqual(urlize('see test[at[example.com'),
+            'see <a href="http://test[at[example.com" rel="nofollow">test[at[example.com</a>' )
+
+
     def test_wordcount(self):
         self.assertEqual(wordcount(''), 0)
         self.assertEqual(wordcount('oneword'), 1)
@@ -451,10 +469,11 @@ class DefaultFiltersTests(TestCase):
             'Lawrence</li>\n\t\t\t<li>Topeka</li>\n\t\t</ul>\n\t\t</li>'\
             '\n\t\t<li>Illinois</li>\n\t</ul>\n\t</li>')
 
+        @python_2_unicode_compatible
         class ULItem(object):
             def __init__(self, title):
               self.title = title
-            def __unicode__(self):
+            def __str__(self):
                 return 'ulitem-%s' % str(self.title)
 
         a = ULItem('a')

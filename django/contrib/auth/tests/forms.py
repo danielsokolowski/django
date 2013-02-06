@@ -3,16 +3,20 @@ from __future__ import unicode_literals
 import os
 from django.contrib.auth.models import User
 from django.contrib.auth.forms import (UserCreationForm, AuthenticationForm,
-    PasswordChangeForm, SetPasswordForm, UserChangeForm, PasswordResetForm)
+    PasswordChangeForm, SetPasswordForm, UserChangeForm, PasswordResetForm,
+    ReadOnlyPasswordHashField, ReadOnlyPasswordHashWidget)
+from django.contrib.auth.tests.utils import skipIfCustomUser
 from django.core import mail
-from django.forms.fields import Field, EmailField
+from django.forms.fields import Field, EmailField, CharField
 from django.test import TestCase
 from django.test.utils import override_settings
-from django.utils.encoding import force_unicode
+from django.utils.encoding import force_text
+from django.utils._os import upath
 from django.utils import translation
 from django.utils.translation import ugettext as _
 
 
+@skipIfCustomUser
 @override_settings(USE_TZ=False, PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',))
 class UserCreationFormTest(TestCase):
 
@@ -27,7 +31,7 @@ class UserCreationFormTest(TestCase):
         form = UserCreationForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["username"].errors,
-                         [force_unicode(form.error_messages['duplicate_username'])])
+                         [force_text(form.error_messages['duplicate_username'])])
 
     def test_invalid_data(self):
         data = {
@@ -38,7 +42,7 @@ class UserCreationFormTest(TestCase):
         form = UserCreationForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["username"].errors,
-                         [force_unicode(form.fields['username'].error_messages['invalid'])])
+                         [force_text(form.fields['username'].error_messages['invalid'])])
 
     def test_password_verification(self):
         # The verification password is incorrect.
@@ -50,13 +54,13 @@ class UserCreationFormTest(TestCase):
         form = UserCreationForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["password2"].errors,
-                         [force_unicode(form.error_messages['password_mismatch'])])
+                         [force_text(form.error_messages['password_mismatch'])])
 
     def test_both_passwords(self):
         # One (or both) passwords weren't given
         data = {'username': 'jsmith'}
         form = UserCreationForm(data)
-        required_error = [force_unicode(Field.default_error_messages['required'])]
+        required_error = [force_text(Field.default_error_messages['required'])]
         self.assertFalse(form.is_valid())
         self.assertEqual(form['password1'].errors, required_error)
         self.assertEqual(form['password2'].errors, required_error)
@@ -65,6 +69,7 @@ class UserCreationFormTest(TestCase):
         form = UserCreationForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form['password1'].errors, required_error)
+        self.assertEqual(form['password2'].errors, [])
 
     def test_success(self):
         # The success case.
@@ -79,6 +84,7 @@ class UserCreationFormTest(TestCase):
         self.assertEqual(repr(u), '<User: jsmith@example.com>')
 
 
+@skipIfCustomUser
 @override_settings(USE_TZ=False, PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',))
 class AuthenticationFormTest(TestCase):
 
@@ -94,7 +100,9 @@ class AuthenticationFormTest(TestCase):
         form = AuthenticationForm(None, data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form.non_field_errors(),
-                         [force_unicode(form.error_messages['invalid_login'])])
+                [force_text(form.error_messages['invalid_login'] % {
+                   'username': User._meta.get_field('username').verbose_name
+                })])
 
     def test_inactive_user(self):
         # The user is inactive.
@@ -105,7 +113,7 @@ class AuthenticationFormTest(TestCase):
         form = AuthenticationForm(None, data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form.non_field_errors(),
-                         [force_unicode(form.error_messages['inactive'])])
+                         [force_text(form.error_messages['inactive'])])
 
     def test_inactive_user_i18n(self):
         with self.settings(USE_I18N=True):
@@ -118,7 +126,7 @@ class AuthenticationFormTest(TestCase):
                 form = AuthenticationForm(None, data)
                 self.assertFalse(form.is_valid())
                 self.assertEqual(form.non_field_errors(),
-                                 [force_unicode(form.error_messages['inactive'])])
+                                 [force_text(form.error_messages['inactive'])])
 
     def test_success(self):
         # The success case
@@ -130,7 +138,16 @@ class AuthenticationFormTest(TestCase):
         self.assertTrue(form.is_valid())
         self.assertEqual(form.non_field_errors(), [])
 
+    def test_username_field_label(self):
 
+        class CustomAuthenticationForm(AuthenticationForm):
+            username = CharField(label="Name", max_length=75)
+
+        form = CustomAuthenticationForm()
+        self.assertEqual(form['username'].label, "Name")
+
+
+@skipIfCustomUser
 @override_settings(USE_TZ=False, PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',))
 class SetPasswordFormTest(TestCase):
 
@@ -146,7 +163,7 @@ class SetPasswordFormTest(TestCase):
         form = SetPasswordForm(user, data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["new_password2"].errors,
-                         [force_unicode(form.error_messages['password_mismatch'])])
+                         [force_text(form.error_messages['password_mismatch'])])
 
     def test_success(self):
         user = User.objects.get(username='testclient')
@@ -158,6 +175,7 @@ class SetPasswordFormTest(TestCase):
         self.assertTrue(form.is_valid())
 
 
+@skipIfCustomUser
 @override_settings(USE_TZ=False, PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',))
 class PasswordChangeFormTest(TestCase):
 
@@ -173,7 +191,7 @@ class PasswordChangeFormTest(TestCase):
         form = PasswordChangeForm(user, data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["old_password"].errors,
-                         [force_unicode(form.error_messages['password_incorrect'])])
+                         [force_text(form.error_messages['password_incorrect'])])
 
     def test_password_verification(self):
         # The two new passwords do not match.
@@ -186,7 +204,7 @@ class PasswordChangeFormTest(TestCase):
         form = PasswordChangeForm(user, data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["new_password2"].errors,
-                         [force_unicode(form.error_messages['password_mismatch'])])
+                         [force_text(form.error_messages['password_mismatch'])])
 
     def test_success(self):
         # The success case.
@@ -202,10 +220,11 @@ class PasswordChangeFormTest(TestCase):
     def test_field_order(self):
         # Regression test - check the order of fields:
         user = User.objects.get(username='testclient')
-        self.assertEqual(PasswordChangeForm(user, {}).fields.keys(),
+        self.assertEqual(list(PasswordChangeForm(user, {}).fields),
                          ['old_password', 'new_password1', 'new_password2'])
 
 
+@skipIfCustomUser
 @override_settings(USE_TZ=False, PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',))
 class UserChangeFormTest(TestCase):
 
@@ -217,7 +236,7 @@ class UserChangeFormTest(TestCase):
         form = UserChangeForm(data, instance=user)
         self.assertFalse(form.is_valid())
         self.assertEqual(form['username'].errors,
-                         [force_unicode(form.fields['username'].error_messages['invalid'])])
+                         [force_text(form.fields['username'].error_messages['invalid'])])
 
     def test_bug_14242(self):
         # A regression test, introduce by adding an optimization for the
@@ -234,25 +253,57 @@ class UserChangeFormTest(TestCase):
         # Just check we can create it
         form = MyUserForm({})
 
+    def test_unsuable_password(self):
+        user = User.objects.get(username='empty_password')
+        user.set_unusable_password()
+        user.save()
+        form = UserChangeForm(instance=user)
+        self.assertIn(_("No password set."), form.as_table())
+
     def test_bug_17944_empty_password(self):
         user = User.objects.get(username='empty_password')
         form = UserChangeForm(instance=user)
-        # Just check that no error is raised.
-        form.as_table()
+        self.assertIn(_("No password set."), form.as_table())
 
     def test_bug_17944_unmanageable_password(self):
         user = User.objects.get(username='unmanageable_password')
         form = UserChangeForm(instance=user)
-        # Just check that no error is raised.
-        form.as_table()
+        self.assertIn(_("Invalid password format or unknown hashing algorithm."),
+            form.as_table())
 
     def test_bug_17944_unknown_password_algorithm(self):
         user = User.objects.get(username='unknown_password')
         form = UserChangeForm(instance=user)
-        # Just check that no error is raised.
-        form.as_table()
+        self.assertIn(_("Invalid password format or unknown hashing algorithm."),
+            form.as_table())
+
+    def test_bug_19133(self):
+        "The change form does not return the password value"
+        # Use the form to construct the POST data
+        user = User.objects.get(username='testclient')
+        form_for_data = UserChangeForm(instance=user)
+        post_data = form_for_data.initial
+
+        # The password field should be readonly, so anything
+        # posted here should be ignored; the form will be
+        # valid, and give back the 'initial' value for the
+        # password field.
+        post_data['password'] = 'new password'
+        form = UserChangeForm(instance=user, data=post_data)
+
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data['password'], 'sha1$6efc0$f93efe9fd7542f25a7be94871ea45aa95de57161')
+
+    def test_bug_19349_bound_password_field(self):
+        user = User.objects.get(username='testclient')
+        form = UserChangeForm(data={}, instance=user)
+        # When rendering the bound password field,
+        # ReadOnlyPasswordHashWidget needs the initial
+        # value to render correctly
+        self.assertEqual(form.initial['password'], form['password'].value())
 
 
+@skipIfCustomUser
 @override_settings(USE_TZ=False, PASSWORD_HASHERS=('django.contrib.auth.hashers.SHA1PasswordHasher',))
 class PasswordResetFormTest(TestCase):
 
@@ -272,7 +323,7 @@ class PasswordResetFormTest(TestCase):
         form = PasswordResetForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form['email'].errors,
-                         [force_unicode(EmailField.default_error_messages['invalid'])])
+                         [force_text(EmailField.default_error_messages['invalid'])])
 
     def test_nonexistant_email(self):
         # Test nonexistant email address
@@ -280,7 +331,7 @@ class PasswordResetFormTest(TestCase):
         form = PasswordResetForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors,
-                         {'email': [force_unicode(form.error_messages['unknown'])]})
+                         {'email': [force_text(form.error_messages['unknown'])]})
 
     def test_cleaned_data(self):
         # Regression test
@@ -291,7 +342,7 @@ class PasswordResetFormTest(TestCase):
         self.assertEqual(form.cleaned_data['email'], email)
 
     def test_custom_email_subject(self):
-        template_path = os.path.join(os.path.dirname(__file__), 'templates')
+        template_path = os.path.join(os.path.dirname(upath(__file__)), 'templates')
         with self.settings(TEMPLATE_DIRS=(template_path,)):
             data = {'email': 'testclient@example.com'}
             form = PasswordResetForm(data)
@@ -330,4 +381,18 @@ class PasswordResetFormTest(TestCase):
         form = PasswordResetForm(data)
         self.assertFalse(form.is_valid())
         self.assertEqual(form["email"].errors,
-                         [_("The user account associated with this e-mail address cannot reset the password.")])
+                         [_("The user account associated with this email address cannot reset the password.")])
+
+
+class ReadOnlyPasswordHashTest(TestCase):
+
+    def test_bug_19349_render_with_none_value(self):
+        # Rendering the widget with value set to None
+        # mustn't raise an exception.
+        widget = ReadOnlyPasswordHashWidget()
+        html = widget.render(name='password', value=None, attrs={})
+        self.assertIn(_("No password set."), html)
+
+    def test_readonly_field_has_changed(self):
+        field = ReadOnlyPasswordHashField()
+        self.assertFalse(field._has_changed('aaa', 'bbb'))

@@ -11,6 +11,7 @@ from django.test import TestCase
 from django.test.utils import str_prefix
 from django.utils.datastructures import MultiValueDict, MergeDict
 from django.utils.safestring import mark_safe
+from django.utils import six
 
 
 class Person(Form):
@@ -82,11 +83,7 @@ class FormsTestCase(TestCase):
         self.assertEqual(p.errors['last_name'], ['This field is required.'])
         self.assertEqual(p.errors['birthday'], ['This field is required.'])
         self.assertFalse(p.is_valid())
-        try:
-            p.cleaned_data
-            self.fail('Attempts to access cleaned_data when validation fails should fail.')
-        except AttributeError:
-            pass
+        self.assertEqual(p.cleaned_data, {})
         self.assertHTMLEqual(str(p), """<tr><th><label for="id_first_name">First name:</label></th><td><ul class="errorlist"><li>This field is required.</li></ul><input type="text" name="first_name" id="id_first_name" /></td></tr>
 <tr><th><label for="id_last_name">Last name:</label></th><td><ul class="errorlist"><li>This field is required.</li></ul><input type="text" name="last_name" id="id_last_name" /></td></tr>
 <tr><th><label for="id_birthday">Birthday:</label></th><td><ul class="errorlist"><li>This field is required.</li></ul><input type="text" name="birthday" id="id_birthday" /></td></tr>""")
@@ -140,16 +137,8 @@ class FormsTestCase(TestCase):
         self.assertEqual(p.errors['first_name'], ['This field is required.'])
         self.assertEqual(p.errors['birthday'], ['This field is required.'])
         self.assertFalse(p.is_valid())
-        self.assertHTMLEqual(p.errors.as_ul(), '<ul class="errorlist"><li>first_name<ul class="errorlist"><li>This field is required.</li></ul></li><li>birthday<ul class="errorlist"><li>This field is required.</li></ul></li></ul>')
-        self.assertEqual(p.errors.as_text(), """* first_name
-  * This field is required.
-* birthday
-  * This field is required.""")
-        try:
-            p.cleaned_data
-            self.fail('Attempts to access cleaned_data when validation fails should fail.')
-        except AttributeError:
-            pass
+        self.assertDictEqual(p.errors, {'birthday': ['This field is required.'], 'first_name': ['This field is required.']})
+        self.assertEqual(p.cleaned_data, {'last_name': 'Lennon'})
         self.assertEqual(p['first_name'].errors, ['This field is required.'])
         self.assertHTMLEqual(p['first_name'].errors.as_ul(), '<ul class="errorlist"><li>This field is required.</li></ul>')
         self.assertEqual(p['first_name'].errors.as_text(), '* This field is required.')
@@ -256,11 +245,11 @@ class FormsTestCase(TestCase):
             get_spam = BooleanField()
 
         f = SignupForm(auto_id=False)
-        self.assertHTMLEqual(str(f['email']), '<input type="text" name="email" />')
+        self.assertHTMLEqual(str(f['email']), '<input type="email" name="email" />')
         self.assertHTMLEqual(str(f['get_spam']), '<input type="checkbox" name="get_spam" />')
 
         f = SignupForm({'email': 'test@example.com', 'get_spam': True}, auto_id=False)
-        self.assertHTMLEqual(str(f['email']), '<input type="text" name="email" value="test@example.com" />')
+        self.assertHTMLEqual(str(f['email']), '<input type="email" name="email" value="test@example.com" />')
         self.assertHTMLEqual(str(f['get_spam']), '<input checked="checked" type="checkbox" name="get_spam" />')
 
         # 'True' or 'true' should be rendered without a value attribute
@@ -276,6 +265,11 @@ class FormsTestCase(TestCase):
 
         f = SignupForm({'email': 'test@example.com', 'get_spam': 'false'}, auto_id=False)
         self.assertHTMLEqual(str(f['get_spam']), '<input type="checkbox" name="get_spam" />')
+
+        # A value of '0' should be interpreted as a True value (#16820)
+        f = SignupForm({'email': 'test@example.com', 'get_spam': '0'})
+        self.assertTrue(f.is_valid())
+        self.assertTrue(f.cleaned_data.get('get_spam'))
 
     def test_widget_output(self):
         # Any Field can have a Widget class passed to its constructor:
@@ -1498,7 +1492,7 @@ class FormsTestCase(TestCase):
                 form = UserRegistration(auto_id=False)
 
             if form.is_valid():
-                return 'VALID: %r' % form.cleaned_data
+                return 'VALID: %r' % sorted(six.iteritems(form.cleaned_data))
 
             t = Template('<form action="" method="post">\n<table>\n{{ form }}\n</table>\n<input type="submit" />\n</form>')
             return t.render(Context({'form': form}))
@@ -1523,7 +1517,8 @@ class FormsTestCase(TestCase):
 <input type="submit" />
 </form>""")
         # Case 3: POST with valid data (the success message).)
-        self.assertHTMLEqual(my_function('POST', {'username': 'adrian', 'password1': 'secret', 'password2': 'secret'}), str_prefix("VALID: {'username': %(_)s'adrian', 'password1': %(_)s'secret', 'password2': %(_)s'secret'}"))
+        self.assertEqual(my_function('POST', {'username': 'adrian', 'password1': 'secret', 'password2': 'secret'}),
+                    str_prefix("VALID: [('password1', %(_)s'secret'), ('password2', %(_)s'secret'), ('username', %(_)s'adrian')]"))
 
     def test_templates_with_forms(self):
         class UserRegistration(Form):
@@ -1678,11 +1673,7 @@ class FormsTestCase(TestCase):
         form = SongForm(data, empty_permitted=False)
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors, {'name': ['This field is required.'], 'artist': ['This field is required.']})
-        try:
-            form.cleaned_data
-            self.fail('Attempts to access cleaned_data when validation fails should fail.')
-        except AttributeError:
-            pass
+        self.assertEqual(form.cleaned_data, {})
 
         # Now let's show what happens when empty_permitted=True and the form is empty.
         form = SongForm(data, empty_permitted=True)
@@ -1696,11 +1687,7 @@ class FormsTestCase(TestCase):
         form = SongForm(data, empty_permitted=False)
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors, {'name': ['This field is required.']})
-        try:
-            form.cleaned_data
-            self.fail('Attempts to access cleaned_data when validation fails should fail.')
-        except AttributeError:
-            pass
+        self.assertEqual(form.cleaned_data, {'artist': 'The Doors'})
 
         # If a field is not given in the data then None is returned for its data. Lets
         # make sure that when checking for empty_permitted that None is treated
@@ -1752,7 +1739,7 @@ class FormsTestCase(TestCase):
 <option value="2">Yes</option>
 <option value="3">No</option>
 </select></li>
-<li><label for="id_email">Email:</label> <input type="text" name="email" id="id_email" /></li>
+<li><label for="id_email">Email:</label> <input type="email" name="email" id="id_email" /></li>
 <li class="required error"><ul class="errorlist"><li>This field is required.</li></ul><label for="id_age">Age:</label> <input type="text" name="age" id="id_age" /></li>""")
 
         self.assertHTMLEqual(p.as_p(), """<ul class="errorlist"><li>This field is required.</li></ul>
@@ -1762,7 +1749,7 @@ class FormsTestCase(TestCase):
 <option value="2">Yes</option>
 <option value="3">No</option>
 </select></p>
-<p><label for="id_email">Email:</label> <input type="text" name="email" id="id_email" /></p>
+<p><label for="id_email">Email:</label> <input type="email" name="email" id="id_email" /></p>
 <ul class="errorlist"><li>This field is required.</li></ul>
 <p class="required error"><label for="id_age">Age:</label> <input type="text" name="age" id="id_age" /></p>""")
 
@@ -1772,7 +1759,7 @@ class FormsTestCase(TestCase):
 <option value="2">Yes</option>
 <option value="3">No</option>
 </select></td></tr>
-<tr><th><label for="id_email">Email:</label></th><td><input type="text" name="email" id="id_email" /></td></tr>
+<tr><th><label for="id_email">Email:</label></th><td><input type="email" name="email" id="id_email" /></td></tr>
 <tr class="required error"><th><label for="id_age">Age:</label></th><td><ul class="errorlist"><li>This field is required.</li></ul><input type="text" name="age" id="id_age" /></td></tr>""")
 
     def test_label_split_datetime_not_displayed(self):

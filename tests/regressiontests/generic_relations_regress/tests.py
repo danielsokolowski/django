@@ -2,7 +2,7 @@ from django.db.models import Q
 from django.test import TestCase
 
 from .models import (Address, Place, Restaurant, Link, CharLink, TextLink,
-    Person, Contact, Note, Organization, OddRelation1, OddRelation2)
+    Person, Contact, Note, Organization, OddRelation1, OddRelation2, Company)
 
 
 class GenericRelationTests(TestCase):
@@ -72,5 +72,29 @@ class GenericRelationTests(TestCase):
             Q(notes__note__icontains=r'other note'))
         self.assertTrue(org_contact in qs)
 
+    def test_join_reuse(self):
+        qs = Person.objects.filter(
+            addresses__street='foo'
+        ).filter(
+            addresses__street='bar'
+        )
+        self.assertEqual(str(qs.query).count('JOIN'), 2)
 
+    def test_generic_relation_ordering(self):
+        """
+        Test that ordering over a generic relation does not include extraneous
+        duplicate results, nor excludes rows not participating in the relation.
+        """
+        p1 = Place.objects.create(name="South Park")
+        p2 = Place.objects.create(name="The City")
+        c = Company.objects.create(name="Chubby's Intl.")
+        l1 = Link.objects.create(content_object=p1)
+        l2 = Link.objects.create(content_object=c)
 
+        places = list(Place.objects.order_by('links__id'))
+        def count_places(place):
+            return len([p for p in places if p.id == place.id])
+
+        self.assertEqual(len(places), 2)
+        self.assertEqual(count_places(p1), 1)
+        self.assertEqual(count_places(p2), 1)

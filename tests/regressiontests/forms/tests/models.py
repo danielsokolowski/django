@@ -8,14 +8,20 @@ from django.db import models
 from django.forms import Form, ModelForm, FileField, ModelChoiceField
 from django.forms.models import ModelFormMetaclass
 from django.test import TestCase
+from django.utils import six
 
 from ..models import (ChoiceOptionModel, ChoiceFieldModel, FileModel, Group,
-    BoundaryModel, Defaults)
+    BoundaryModel, Defaults, OptionalMultiChoiceModel)
 
 
 class ChoiceFieldForm(ModelForm):
     class Meta:
         model = ChoiceFieldModel
+
+
+class OptionalMultiChoiceModelForm(ModelForm):
+    class Meta:
+        model = OptionalMultiChoiceModel
 
 
 class FileForm(Form):
@@ -33,6 +39,21 @@ class TestTicket12510(TestCase):
             field = ModelChoiceField(Group.objects.order_by('-name'))
             self.assertEqual('a', field.clean(self.groups[0].pk).name)
 
+
+class TestTicket14567(TestCase):
+    """
+    Check that the return values of ModelMultipleChoiceFields are QuerySets
+    """
+    def test_empty_queryset_return(self):
+        "If a model's ManyToManyField has blank=True and is saved with no data, a queryset is returned."
+        form = OptionalMultiChoiceModelForm({'multi_choice_optional': '', 'multi_choice': ['1']})
+        self.assertTrue(form.is_valid())
+        # Check that the empty value is a QuerySet
+        self.assertTrue(isinstance(form.cleaned_data['multi_choice_optional'], models.query.QuerySet))
+        # While we're at it, test whether a QuerySet is returned if there *is* a value.
+        self.assertTrue(isinstance(form.cleaned_data['multi_choice'], models.query.QuerySet))
+
+
 class ModelFormCallableModelDefault(TestCase):
     def test_no_empty_option(self):
         "If a model's ForeignKey has blank=False and a default, no empty option is created (Refs #10792)."
@@ -40,7 +61,7 @@ class ModelFormCallableModelDefault(TestCase):
 
         choices = list(ChoiceFieldForm().fields['choice'].choices)
         self.assertEqual(len(choices), 1)
-        self.assertEqual(choices[0], (option.pk, unicode(option)))
+        self.assertEqual(choices[0], (option.pk, six.text_type(option)))
 
     def test_callable_initial_value(self):
         "The initial value for a callable default returning a queryset is the pk (refs #13769)"
@@ -100,7 +121,6 @@ class ModelFormCallableModelDefault(TestCase):
 <option value="3" selected="selected">ChoiceOption 3</option>
 </select><input type="hidden" name="initial-multi_choice_int" value="2" id="initial-id_multi_choice_int_0" />
 <input type="hidden" name="initial-multi_choice_int" value="3" id="initial-id_multi_choice_int_1" /> <span class="helptext"> Hold down "Control", or "Command" on a Mac, to select more than one.</span></p>""")
-
 
 
 class FormsModelTestCase(TestCase):
@@ -177,7 +197,7 @@ class RelatedModelFormTests(TestCase):
         class Meta:
             model=A
 
-        self.assertRaises(ValueError, ModelFormMetaclass, b'Form', (ModelForm,), {'Meta': Meta})
+        self.assertRaises(ValueError, ModelFormMetaclass, str('Form'), (ModelForm,), {'Meta': Meta})
 
         class B(models.Model):
             pass
@@ -195,4 +215,4 @@ class RelatedModelFormTests(TestCase):
         class Meta:
             model=A
 
-        self.assertTrue(issubclass(ModelFormMetaclass(b'Form', (ModelForm,), {'Meta': Meta}), ModelForm))
+        self.assertTrue(issubclass(ModelFormMetaclass(str('Form'), (ModelForm,), {'Meta': Meta}), ModelForm))

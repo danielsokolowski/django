@@ -8,7 +8,10 @@ import shutil
 import stat
 import sys
 import tempfile
-import urllib
+try:
+    from urllib.request import urlretrieve
+except ImportError:     # Python 2
+    from urllib import urlretrieve
 
 from optparse import make_option
 from os import path
@@ -58,22 +61,16 @@ class TemplateCommand(BaseCommand):
     can_import_settings = False
     # The supported URL schemes
     url_schemes = ['http', 'https', 'ftp']
+    # Can't perform any active locale changes during this command, because
+    # setting might not be available at all.
+    leave_locale_alone = True
 
     def handle(self, app_or_project, name, target=None, **options):
         self.app_or_project = app_or_project
         self.paths_to_remove = []
         self.verbosity = int(options.get('verbosity'))
 
-        # If it's not a valid directory name.
-        if not re.search(r'^[_a-zA-Z]\w*$', name):
-            # Provide a smart error message, depending on the error.
-            if not re.search(r'^[_a-zA-Z]', name):
-                message = ('make sure the name begins '
-                           'with a letter or underscore')
-            else:
-                message = 'use only numbers, letters and underscores'
-            raise CommandError("%r is not a valid %s name. Please %s." %
-                               (name, app_or_project, message))
+        self.validate_name(name, app_or_project)
 
         # if some directory is given, make sure it's nicely expanded
         if target is None:
@@ -108,11 +105,16 @@ class TemplateCommand(BaseCommand):
         base_name = '%s_name' % app_or_project
         base_subdir = '%s_template' % app_or_project
         base_directory = '%s_directory' % app_or_project
+        if django.VERSION[-1] == 0:
+            docs_version = 'dev'
+        else:
+            docs_version = '%d.%d' % django.VERSION[:2]
 
         context = Context(dict(options, **{
             base_name: name,
             base_directory: top_dir,
-        }))
+            'docs_version': docs_version,
+        }), autoescape=False)
 
         # Setup a stub settings environment for template rendering
         from django.conf import settings
@@ -133,7 +135,7 @@ class TemplateCommand(BaseCommand):
                     os.mkdir(target_dir)
 
             for dirname in dirs[:]:
-                if dirname.startswith('.'):
+                if dirname.startswith('.') or dirname == '__pycache__':
                     dirs.remove(dirname)
 
             for filename in files:
@@ -151,12 +153,14 @@ class TemplateCommand(BaseCommand):
 
                 # Only render the Python files, as we don't want to
                 # accidentally render Django templates files
-                with open(old_path, 'r') as template_file:
+                with open(old_path, 'rb') as template_file:
                     content = template_file.read()
                 if filename.endswith(extensions) or filename in extra_files:
+                    content = content.decode('utf-8')
                     template = Template(content)
                     content = template.render(context)
-                with open(new_path, 'w') as new_file:
+                    content = content.encode('utf-8')
+                with open(new_path, 'wb') as new_file:
                     new_file.write(content)
 
                 if self.verbosity >= 2:
@@ -206,6 +210,20 @@ class TemplateCommand(BaseCommand):
         raise CommandError("couldn't handle %s template %s." %
                            (self.app_or_project, template))
 
+    def validate_name(self, name, app_or_project):
+        if name is None:
+            raise CommandError("you must provide %s %s name" % (
+                "an" if app_or_project == "app" else "a", app_or_project))
+        # If it's not a valid directory name.
+        if not re.search(r'^[_a-zA-Z]\w*$', name):
+            # Provide a smart error message, depending on the error.
+            if not re.search(r'^[_a-zA-Z]', name):
+                message = 'make sure the name begins with a letter or underscore'
+            else:
+                message = 'use only numbers, letters and underscores'
+            raise CommandError("%r is not a valid %s name. Please %s." %
+                               (name, app_or_project, message))
+
     def download(self, url):
         """
         Downloads the given URL and returns the file name.
@@ -227,8 +245,7 @@ class TemplateCommand(BaseCommand):
         if self.verbosity >= 2:
             self.stdout.write("Downloading %s\n" % display_url)
         try:
-            the_path, info = urllib.urlretrieve(url,
-                                                path.join(tempdir, filename))
+            the_path, info = urlretrieve(url, path.join(tempdir, filename))
         except IOError as e:
             raise CommandError("couldn't download URL %s to %s: %s" %
                                (url, filename, e))

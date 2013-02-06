@@ -4,7 +4,7 @@ Where possible, we try to use the system-native version and only fall back to
 these implementations if necessary.
 """
 
-import __builtin__
+from django.utils.six.moves import builtins
 import itertools
 import warnings
 
@@ -19,15 +19,5 @@ def is_iterable(x):
 
 def product(*args, **kwds):
     warnings.warn("django.utils.itercompat.product is deprecated; use the native version instead",
-                  PendingDeprecationWarning)
+                  DeprecationWarning, stacklevel=2)
     return itertools.product(*args, **kwds)
-
-def all(iterable):
-    warnings.warn("django.utils.itercompat.all is deprecated; use the native version instead",
-                  DeprecationWarning)
-    return __builtin__.all(iterable)
-
-def any(iterable):
-    warnings.warn("django.utils.itercompat.any is deprecated; use the native version instead",
-                  DeprecationWarning)
-    return __builtin__.any(iterable)

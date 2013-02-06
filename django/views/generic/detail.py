@@ -66,7 +66,7 @@ class SingleObjectMixin(ContextMixin):
             else:
                 raise ImproperlyConfigured("%(cls)s is missing a queryset. Define "
                                            "%(cls)s.model, %(cls)s.queryset, or override "
-                                           "%(cls)s.get_object()." % {
+                                           "%(cls)s.get_queryset()." % {
                                                 'cls': self.__class__.__name__
                                         })
         return self.queryset._clone()
@@ -84,7 +84,7 @@ class SingleObjectMixin(ContextMixin):
         if self.context_object_name:
             return self.context_object_name
         elif isinstance(obj, models.Model):
-            return obj._meta.object_name.lower()
+            return obj._meta.model_name
         else:
             return None
 
@@ -144,13 +144,13 @@ class SingleObjectTemplateResponseMixin(TemplateResponseMixin):
         if isinstance(self.object, models.Model):
             names.append("%s/%s%s.html" % (
                 self.object._meta.app_label,
-                self.object._meta.object_name.lower(),
+                self.object._meta.model_name,
                 self.template_name_suffix
             ))
         elif hasattr(self, 'model') and self.model is not None and issubclass(self.model, models.Model):
             names.append("%s/%s%s.html" % (
                 self.model._meta.app_label,
-                self.model._meta.object_name.lower(),
+                self.model._meta.model_name,
                 self.template_name_suffix
             ))
         return names

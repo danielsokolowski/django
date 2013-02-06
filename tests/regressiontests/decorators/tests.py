@@ -1,4 +1,3 @@
-import warnings
 from functools import wraps
 
 from django.contrib.admin.views.decorators import staff_member_required
@@ -116,22 +115,6 @@ class DecoratorsTest(TestCase):
         my_view_cached2 = cache_page(123, key_prefix="test")(my_view)
         self.assertEqual(my_view_cached2(HttpRequest()), "response")
 
-    def test_cache_page_old_style(self):
-        """
-        Test that we can call cache_page the old way
-        """
-        def my_view(request):
-            return "response"
-        with warnings.catch_warnings(record=True):
-            my_view_cached = cache_page(my_view, 123)
-            self.assertEqual(my_view_cached(HttpRequest()), "response")
-            my_view_cached2 = cache_page(my_view, 123, key_prefix="test")
-            self.assertEqual(my_view_cached2(HttpRequest()), "response")
-            my_view_cached3 = cache_page(my_view)
-            self.assertEqual(my_view_cached3(HttpRequest()), "response")
-            my_view_cached4 = cache_page()(my_view)
-            self.assertEqual(my_view_cached4(HttpRequest()), "response")
-
     def test_require_safe_accepts_only_safe_methods(self):
         """
         Test for the require_safe decorator.
@@ -220,7 +203,7 @@ class MethodDecoratorTests(TestCase):
         self.assertEqual(getattr(Test.method, 'myattr2', False), True)
 
         self.assertEqual(Test.method.__doc__, 'A method')
-        self.assertEqual(Test.method.__func__.__name__, 'method')
+        self.assertEqual(Test.method.__name__, 'method')
 
 
 class XFrameOptionsDecoratorsTests(TestCase):

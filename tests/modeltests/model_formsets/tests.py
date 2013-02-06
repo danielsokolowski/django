@@ -10,6 +10,7 @@ from django.db import models
 from django.forms.models import (_get_foreign_key, inlineformset_factory,
     modelformset_factory)
 from django.test import TestCase, skipUnlessDBFeature
+from django.utils import six
 
 from .models import (Author, BetterAuthor, Book, BookWithCustomPK,
     BookWithOptionalAltEditor, AlternateBook, AuthorMeeting, CustomPrimaryKey,
@@ -72,7 +73,7 @@ class DeletionTests(TestCase):
             'form-TOTAL_FORMS': '1',
             'form-INITIAL_FORMS': '1',
             'form-MAX_NUM_FORMS': '0',
-            'form-0-id': unicode(poet.id),
+            'form-0-id': six.text_type(poet.id),
             'form-0-name': 'x' * 1000,
         }
         formset = PoetFormSet(data, queryset=Poet.objects.all())
@@ -772,7 +773,7 @@ class ModelFormsetTest(TestCase):
             'owner_set-TOTAL_FORMS': '3',
             'owner_set-INITIAL_FORMS': '1',
             'owner_set-MAX_NUM_FORMS': '',
-            'owner_set-0-auto_id': unicode(owner1.auto_id),
+            'owner_set-0-auto_id': six.text_type(owner1.auto_id),
             'owner_set-0-name': 'Joe Perry',
             'owner_set-1-auto_id': '',
             'owner_set-1-name': 'Jack Berry',
@@ -835,7 +836,7 @@ class ModelFormsetTest(TestCase):
             'ownerprofile-TOTAL_FORMS': '1',
             'ownerprofile-INITIAL_FORMS': '1',
             'ownerprofile-MAX_NUM_FORMS': '1',
-            'ownerprofile-0-owner': unicode(owner1.auto_id),
+            'ownerprofile-0-owner': six.text_type(owner1.auto_id),
             'ownerprofile-0-age': '55',
         }
         formset = FormSet(data, instance=owner1)
@@ -993,8 +994,8 @@ class ModelFormsetTest(TestCase):
             'membership_set-TOTAL_FORMS': '1',
             'membership_set-INITIAL_FORMS': '0',
             'membership_set-MAX_NUM_FORMS': '',
-            'membership_set-0-date_joined': unicode(now.strftime('%Y-%m-%d %H:%M:%S')),
-            'initial-membership_set-0-date_joined': unicode(now.strftime('%Y-%m-%d %H:%M:%S')),
+            'membership_set-0-date_joined': six.text_type(now.strftime('%Y-%m-%d %H:%M:%S')),
+            'initial-membership_set-0-date_joined': six.text_type(now.strftime('%Y-%m-%d %H:%M:%S')),
             'membership_set-0-karma': '',
         }
         formset = FormSet(data, instance=person)
@@ -1007,8 +1008,8 @@ class ModelFormsetTest(TestCase):
             'membership_set-TOTAL_FORMS': '1',
             'membership_set-INITIAL_FORMS': '0',
             'membership_set-MAX_NUM_FORMS': '',
-            'membership_set-0-date_joined': unicode(one_day_later.strftime('%Y-%m-%d %H:%M:%S')),
-            'initial-membership_set-0-date_joined': unicode(now.strftime('%Y-%m-%d %H:%M:%S')),
+            'membership_set-0-date_joined': six.text_type(one_day_later.strftime('%Y-%m-%d %H:%M:%S')),
+            'initial-membership_set-0-date_joined': six.text_type(now.strftime('%Y-%m-%d %H:%M:%S')),
             'membership_set-0-karma': '',
         }
         formset = FormSet(filled_data, instance=person)
@@ -1029,9 +1030,9 @@ class ModelFormsetTest(TestCase):
             'membership_set-TOTAL_FORMS': '1',
             'membership_set-INITIAL_FORMS': '0',
             'membership_set-MAX_NUM_FORMS': '',
-            'membership_set-0-date_joined_0': unicode(now.strftime('%Y-%m-%d')),
-            'membership_set-0-date_joined_1': unicode(now.strftime('%H:%M:%S')),
-            'initial-membership_set-0-date_joined': unicode(now.strftime('%Y-%m-%d %H:%M:%S')),
+            'membership_set-0-date_joined_0': six.text_type(now.strftime('%Y-%m-%d')),
+            'membership_set-0-date_joined_1': six.text_type(now.strftime('%H:%M:%S')),
+            'initial-membership_set-0-date_joined': six.text_type(now.strftime('%Y-%m-%d %H:%M:%S')),
             'membership_set-0-karma': '',
         }
         formset = FormSet(data, instance=person)
@@ -1189,3 +1190,27 @@ class ModelFormsetTest(TestCase):
         self.assertFalse(formset.is_valid())
         self.assertEqual(formset._non_form_errors,
             ['Please correct the duplicate data for subtitle which must be unique for the month in posted.'])
+
+
+class TestModelFormsetWidgets(TestCase):
+    def test_modelformset_factory_widgets(self):
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'poet'})
+        }
+        PoetFormSet = modelformset_factory(Poet, widgets=widgets)
+        form = PoetFormSet.form()
+        self.assertHTMLEqual(
+            "%s" % form['name'],
+            '<input id="id_name" maxlength="100" type="text" class="poet" name="name" />'
+        )
+
+    def test_inlineformset_factory_widgets(self):
+        widgets = {
+            'title': forms.TextInput(attrs={'class': 'book'})
+        }
+        BookFormSet = inlineformset_factory(Author, Book, widgets=widgets)
+        form = BookFormSet.form()
+        self.assertHTMLEqual(
+            "%s" % form['title'],
+            '<input class="book" id="id_title" maxlength="100" name="title" type="text" />'
+        )

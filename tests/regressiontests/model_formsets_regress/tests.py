@@ -5,6 +5,7 @@ from django.forms.formsets import BaseFormSet, DELETION_FIELD_NAME
 from django.forms.util import ErrorDict, ErrorList
 from django.forms.models import modelform_factory, inlineformset_factory, modelformset_factory, BaseModelFormSet
 from django.test import TestCase
+from django.utils import six
 
 from .models import User, UserSite, Restaurant, Manager, Network, Host
 
@@ -51,7 +52,7 @@ class InlineFormsetTests(TestCase):
             'usersite_set-TOTAL_FORMS': '1',
             'usersite_set-INITIAL_FORMS': '1',
             'usersite_set-MAX_NUM_FORMS': '0',
-            'usersite_set-0-id': unicode(usersite[0]['id']),
+            'usersite_set-0-id': six.text_type(usersite[0]['id']),
             'usersite_set-0-data': '11',
             'usersite_set-0-user': 'apollo13'
         }
@@ -69,7 +70,7 @@ class InlineFormsetTests(TestCase):
             'usersite_set-TOTAL_FORMS': '2',
             'usersite_set-INITIAL_FORMS': '1',
             'usersite_set-MAX_NUM_FORMS': '0',
-            'usersite_set-0-id': unicode(usersite[0]['id']),
+            'usersite_set-0-id': six.text_type(usersite[0]['id']),
             'usersite_set-0-data': '11',
             'usersite_set-0-user': 'apollo13',
             'usersite_set-1-data': '42',
@@ -124,7 +125,7 @@ class InlineFormsetTests(TestCase):
             'manager_set-TOTAL_FORMS': '1',
             'manager_set-INITIAL_FORMS': '1',
             'manager_set-MAX_NUM_FORMS': '0',
-            'manager_set-0-id': unicode(manager[0]['id']),
+            'manager_set-0-id': six.text_type(manager[0]['id']),
             'manager_set-0-name': 'Terry Gilliam'
         }
         form_set = FormSet(data, instance=restaurant)
@@ -140,7 +141,7 @@ class InlineFormsetTests(TestCase):
             'manager_set-TOTAL_FORMS': '2',
             'manager_set-INITIAL_FORMS': '1',
             'manager_set-MAX_NUM_FORMS': '0',
-            'manager_set-0-id': unicode(manager[0]['id']),
+            'manager_set-0-id': six.text_type(manager[0]['id']),
             'manager_set-0-name': 'Terry Gilliam',
             'manager_set-1-name': 'John Cleese'
         }
@@ -188,7 +189,7 @@ class InlineFormsetTests(TestCase):
             'host_set-TOTAL_FORMS': '2',
             'host_set-INITIAL_FORMS': '1',
             'host_set-MAX_NUM_FORMS': '0',
-            'host_set-0-id': unicode(host1.id),
+            'host_set-0-id': six.text_type(host1.id),
             'host_set-0-hostname': 'tranquility.hub.dal.net',
             'host_set-1-hostname': 'matrix.de.eu.dal.net'
         }
@@ -260,14 +261,17 @@ class FormsetTests(TestCase):
             formset.save()
 
 
-class CustomWidget(forms.CharField):
+class CustomWidget(forms.widgets.TextInput):
     pass
 
 
 class UserSiteForm(forms.ModelForm):
     class Meta:
         model = UserSite
-        widgets = {'data': CustomWidget}
+        widgets = {
+            'id': CustomWidget,
+            'data': CustomWidget,
+        }
 
 
 class Callback(object):
@@ -282,24 +286,27 @@ class Callback(object):
 
 class FormfieldCallbackTests(TestCase):
     """
-    Regression for #13095: Using base forms with widgets
-    defined in Meta should not raise errors.
+    Regression for #13095 and #17683: Using base forms with widgets
+    defined in Meta should not raise errors and BaseModelForm should respect
+    the specified pk widget.
     """
 
     def test_inlineformset_factory_default(self):
         Formset = inlineformset_factory(User, UserSite, form=UserSiteForm)
         form = Formset().forms[0]
+        self.assertTrue(isinstance(form['id'].field.widget, CustomWidget))
         self.assertTrue(isinstance(form['data'].field.widget, CustomWidget))
 
     def test_modelformset_factory_default(self):
         Formset = modelformset_factory(UserSite, form=UserSiteForm)
         form = Formset().forms[0]
+        self.assertTrue(isinstance(form['id'].field.widget, CustomWidget))
         self.assertTrue(isinstance(form['data'].field.widget, CustomWidget))
 
     def assertCallbackCalled(self, callback):
         id_field, user_field, data_field = UserSite._meta.fields
         expected_log = [
-            (id_field, {}),
+            (id_field, {'widget': CustomWidget}),
             (user_field, {}),
             (data_field, {'widget': CustomWidget}),
         ]
@@ -316,7 +323,6 @@ class FormfieldCallbackTests(TestCase):
         modelformset_factory(UserSite, form=UserSiteForm,
                              formfield_callback=callback)
         self.assertCallbackCalled(callback)
-
 
 class BaseCustomDeleteFormSet(BaseFormSet):
     """
@@ -350,7 +356,7 @@ class FormfieldShouldDeleteFormTests(TestCase):
 
         def should_delete(self):
             """ delete form if odd PK """
-            return self.instance.id % 2 != 0
+            return self.instance.pk % 2 != 0
 
     NormalFormset = modelformset_factory(User, form=CustomDeleteUserForm, can_delete=True)
     DeleteFormset = modelformset_factory(User, form=CustomDeleteUserForm, formset=BaseCustomDeleteModelFormSet)
@@ -391,7 +397,7 @@ class FormfieldShouldDeleteFormTests(TestCase):
         data = dict(self.data)
         data['form-INITIAL_FORMS'] = 4
         data.update(dict(
-            ('form-%d-id' % i, user.id)
+            ('form-%d-id' % i, user.pk)
             for i,user in enumerate(User.objects.all())
         ))
         formset = self.NormalFormset(data, queryset=User.objects.all())
@@ -408,7 +414,7 @@ class FormfieldShouldDeleteFormTests(TestCase):
         data = dict(self.data)
         data['form-INITIAL_FORMS'] = 4
         data.update(dict(
-            ('form-%d-id' % i, user.id)
+            ('form-%d-id' % i, user.pk)
             for i,user in enumerate(User.objects.all())
         ))
         data.update(self.delete_all_ids)
@@ -427,7 +433,7 @@ class FormfieldShouldDeleteFormTests(TestCase):
         data = dict(self.data)
         data['form-INITIAL_FORMS'] = 4
         data.update(dict(
-            ('form-%d-id' % i, user.id)
+            ('form-%d-id' % i, user.pk)
             for i,user in enumerate(User.objects.all())
         ))
         data.update(self.delete_all_ids)
@@ -439,5 +445,5 @@ class FormfieldShouldDeleteFormTests(TestCase):
         self.assertEqual(len(User.objects.all()), 2)
 
         # verify no "odd" PKs left
-        odd_ids = [user.id for user in User.objects.all() if user.id % 2]
+        odd_ids = [user.pk for user in User.objects.all() if user.pk % 2]
         self.assertEqual(len(odd_ids), 0)
